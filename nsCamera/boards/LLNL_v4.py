@@ -344,7 +344,7 @@ class llnl_v4:
                     "MON_CH8": "DACH",
                 }
             )
-        else:  # Daedalus
+        if self.ca.sensorname == "daedalus":
             self.subreg_aliases = OrderedDict(
                 {
                     "HST_OSC_VREF_IN": "DACC",
