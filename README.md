@@ -1,11 +1,10 @@
 
-# **THIS REPOSITORY IS DEPRECATED**
+# **Notes about repository**
 
-The repository for the nsCamera software has been transferred to the LLNL GitHub site. Please use the repositories at https://github.com/llnl/nsCamera and https://github.com/llnl/nsCamera_plugin .
+The repository for the nsCamera software has been transferred from nsgcc workspace to LLNL GitHub site at: https://github.com/nsgcc/nsCamera.
 
+In addition, if interested in using a ImageJ plugin GUI for the nsCamera software, please use: https://github.com/llnl/nsCamera_plugin.
 
-
-<style type="text/css">@page { size: letter; margin-top: 0.4in; margin-bottom: 0.4in;margin-left: -0.05in; margin-right: -0.05in }</style>
 # nsCamera Software Interface
 
 
