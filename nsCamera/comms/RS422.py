@@ -14,7 +14,7 @@ and Lawrence Livermore National Security, LLC (LLNS) for the operation of LLNL.
 'nsCamera' is distributed under the terms of the MIT license. All new contributions must
 be made under this license.
 
-Version: 2.1.2 (February 2025)
+Version: 2.1.3 (April 2026) - AHS RS422 fix for stable comms
 """
 
 import logging
@@ -45,12 +45,12 @@ class RS422:
         closeDevice() - close serial connections
     """
 
-    def __init__(self, camassem, baud=921600, par="O", stop=1):
+    def __init__(self, camassem, baud=921600, par="N", stop=1):
         """
         Args:
             camassem: parent cameraAssembler object
             baud: bits per second
-            par: parity type
+            par: parity type. Default changed to "N" for 921600 8N1.
             stop: number of stop bits
         """
         self.ca = camassem
@@ -70,62 +70,122 @@ class RS422:
             + str(stop)
         )
         self.mode = 0
-        self.baud = baud  # Baud rate (bits/second)
-        self.par = par  # Parity bit
-        self.stop = stop  # Number of stop bits
-        self.read_timeout = 1  # default timeout for ordinary packets
+        self.baud = baud
+        self.par = par
+        self.stop = stop
+        self.read_timeout = 3
         self.write_timeout = 1
-        # TODO: make datatimeout a cameraAssembler parameter
-        self.datatimeout = 60  # timeout for data read
+        self.serial_chunk_timeout = 0.05
+        self.tx_settle = 0.01
+        self.rx_quiet_s = 0.05
+        self.rx_drain_max_s = 0.5
+        self.regular_settle_s = 0.01
+        self.regular_timeout_s = 1.0
+        self.regular_tries = 8
+        self.rs422_stats = {
+            "regular_tx_count": 0,
+            "regular_attempt_count": 0,
+            "regular_retry_count": 0,
+            "regular_short_read_count": 0,
+            "regular_wrong_length_count": 0,
+            "regular_crc_fail_count": 0,
+            "regular_bad_frame_count": 0,
+            "regular_success_count": 0,
+            "regular_fail_count": 0,
+            "regular_max_attempts_used": 0,
+            "payload_tx_count": 0,
+            "payload_attempt_count": 0,
+            "payload_retry_count": 0,
+            "payload_short_read_count": 0,
+            "payload_preface_crc_fail_count": 0,
+            "payload_crc_fail_count": 0,
+            "payload_success_count": 0,
+            "payload_fail_count": 0,
+            "payload_max_attempts_used": 0,
+        }
+        self.datatimeout = 90
         logging.debug(
             self.logdebug + "Data timeout = " + str(self.datatimeout) + " seconds"
         )
         self.PY3 = sys.version_info > (3,)
         self.skipError = False
+        self._ser = None
+
         port = ""
         ports = list(serial.tools.list_ports.comports())
         logging.debug(self.logdebug + "Comports: " + str(ports))
+        requested = str(self.ca.port) if self.ca.port is not None else None
+
         for p, desc, add in ports:
-            if self.ca.port is None or p == "COM" + str(self.ca.port):
-                logging.info(self.loginfo + "found comm port " + p)
+            if not self._port_matches_request(p, requested):
+                continue
+            logging.info(self.loginfo + "found comm port " + p)
+            try:
+                ser = self._open_serial(p, timeout=self.serial_chunk_timeout)
+
+                # Board-identification probe. Treat this exactly like a normal
+                # regular command: the USB-RS422 path can return short/corrupt
+                # packets intermittently, so do not reject a port after one bad
+                # probe. The expected response to read command 0x1 is command 0x9.
+                resp = ""
+                probe_ok = False
+                for probe_attempt in range(self.regular_tries):
+                    if probe_attempt:
+                        logging.debug(
+                            self.logdebug
+                            + "Init probe: retrying, attempt "
+                            + str(probe_attempt + 1)
+                            + "/"
+                            + str(self.regular_tries)
+                        )
+                        time.sleep(0.05)
+
+                    err, resp = self._regular_transaction_raw(
+                        ser,
+                        "aaaa1000000000001a84",
+                        timeout_s=self.read_timeout,
+                        settle_s=self.tx_settle,
+                    )
+                    logging.debug(self.logdebug + "Init response: " + str(resp))
+
+                    if err:
+                        continue
+                    if len(resp) != 20:
+                        continue
+                    if resp[0:4].lower() != "aaaa" or resp[4].lower() != "9":
+                        continue
+                    if not checkCRC(resp[4:20]):
+                        logging.error(self.logerr + "Init probe CRC fail: " + resp)
+                        continue
+                    probe_ok = True
+                    break
+
+                if probe_ok:
+                    boardid = resp[8:10]
+                    if boardid == "00":
+                        logging.critical(
+                            self.logcrit + "SNLrevC board detected - not compatible with nsCamera >= 2.0"
+                        )
+                        ser.close()
+                        sys.exit(1)
+                    elif boardid == "81":
+                        logging.info(self.loginfo + "LLNLv1 board detected")
+                    elif boardid == "84":
+                        logging.info(self.loginfo + "LLNLv4 board detected")
+                    else:
+                        logging.info(self.loginfo + "unidentified board detected")
+                    logging.info(self.loginfo + "connected to " + p)
+                    port = p
+                    self._ser = ser
+                    break
+                ser.close()
+            except Exception as e:
                 try:
-                    with serial.Serial(
-                        p,
-                        self.baud,
-                        parity=self.par,
-                        timeout=0.01,
-                        write_timeout=0.01,
-                    ) as ser:
-                        ser.write(str2bytes("aaaa1000000000001a84"))
-                        time.sleep(1)
-                        s = ser.read(10)
-                        resp = bytes2str(s)
-                        logging.debug(self.logdebug + "Init response: " + str(resp))
-                        if (
-                            resp[0:5].lower() == "aaaa9"
-                        ):  # TODO: add check for RS422 bit in board description
-                            boardid = resp[8:10]
-                            if boardid == "00":
-                                logging.critical(
-                                    self.logcrit + "SNLrevC board detected - not "
-                                    "compatible with nsCamera >= 2.0"
-                                )
-                                sys.exit(1)
-                            elif boardid == "81":
-                                logging.info(self.loginfo + "LLNLv1 board detected")
-                            elif boardid == "84":
-                                logging.info(self.loginfo + "LLNLv4 board detected")
-                            else:
-                                logging.info(
-                                    self.loginfo + "unidentified board detected"
-                                )
-                            logging.info(self.loginfo + "connected to " + p)
-                            port = p
-                            ser.reset_input_buffer()
-                            ser.reset_output_buffer()
-                            break
-                except Exception as e:
-                    logging.error(self.logerr + "port identification: " + str(e))
+                    ser.close()
+                except Exception:
+                    pass
+                logging.error(self.logerr + "port identification: " + str(e))
+
         if port == "":
             if self.ca.port:
                 logging.critical(
@@ -135,17 +195,9 @@ class RS422:
             else:
                 logging.critical(self.logcrit + "No usable board found")
                 sys.exit(1)
-        self.port = port  # COM port to use for RS422 link
-        self.ca.port = port[3:]  # re-extract port number from com name
 
-        self._ser = serial.Serial(  # Class RS422
-            port=self.port,
-            baudrate=self.baud,
-            parity=self.par,
-            stopbits=self.stop,
-            timeout=self.read_timeout,  # timeout for serial read
-            bytesize=serial.EIGHTBITS,
-        )
+        self.port = port
+        self.ca.port = port
         self.payloadsize = (
             self.ca.sensor.width
             * self.ca.sensor.height
@@ -155,10 +207,171 @@ class RS422:
         logging.debug(
             self.logdebug + "Payload size: " + str(self.payloadsize) + " bytes"
         )
-        self._ser.flushInput()
+        self._ser.reset_input_buffer()
+        self._ser.reset_output_buffer()
         if not self._ser.is_open:
             logging.critical(self.logcrit + "Unable to open serial connection")
             sys.exit(1)
+
+    def resetRS422Stats(self):
+        """Reset silent RS422 regular-command quality counters."""
+        for key in self.rs422_stats:
+            self.rs422_stats[key] = 0
+
+    def _port_matches_request(self, port_name, requested):
+        if requested is None:
+            return True
+        requested = str(requested)
+        return (
+            port_name == requested
+            or port_name.endswith(requested)
+            or port_name == "COM" + requested
+            or port_name.endswith("." + requested)
+            or port_name.endswith("-" + requested)
+        )
+
+    def _open_serial(self, port_name, timeout=None):
+        if timeout is None:
+            timeout = self.serial_chunk_timeout
+        return serial.Serial(
+            port=port_name,
+            baudrate=self.baud,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE if str(self.par).upper() == "N" else self.par,
+            stopbits=serial.STOPBITS_ONE if int(self.stop) == 1 else self.stop,
+            timeout=timeout,
+            write_timeout=self.write_timeout,
+            inter_byte_timeout=None,
+            xonxoff=False,
+            rtscts=False,
+            dsrdtr=False,
+            exclusive=True,
+        )
+
+    def _read_exact_raw(self, ser, nbytes, timeout_s):
+        """Read exactly nbytes using the same behavior as the proven standalone util.py.
+
+        Important: do not temporarily change/restore ser.timeout here. The standalone
+        path leaves the serial object configured with timeout=0.05 and simply loops
+        until the absolute deadline. Earlier nsCamera patches restored timeouts around
+        reads; the standalone-on-nsCamera-serial test proved the plain util behavior is
+        clean on this same live serial object.
+        """
+        if ser.timeout != self.serial_chunk_timeout:
+            ser.timeout = self.serial_chunk_timeout
+
+        deadline = time.time() + timeout_s
+        rx = b""
+        while len(rx) < nbytes and time.time() < deadline:
+            chunk = ser.read(nbytes - len(rx))
+            if chunk:
+                rx += chunk
+        return rx
+
+    def _drain_quiet(self, ser, quiet_s=None, max_s=None, log=True):
+        """Drain stale/late RX bytes until the serial input has been quiet."""
+        if quiet_s is None:
+            quiet_s = self.rx_quiet_s
+        if max_s is None:
+            max_s = self.rx_drain_max_s
+        old_timeout = ser.timeout
+        ser.timeout = self.serial_chunk_timeout
+        deadline = time.time() + max_s
+        quiet_deadline = time.time() + quiet_s
+        drained = b""
+        try:
+            while time.time() < deadline:
+                try:
+                    waiting = ser.in_waiting
+                except Exception:
+                    waiting = 0
+                if waiting:
+                    chunk = ser.read(waiting)
+                    if chunk:
+                        drained += chunk
+                        quiet_deadline = time.time() + quiet_s
+                elif time.time() >= quiet_deadline:
+                    break
+                else:
+                    time.sleep(0.005)
+        finally:
+            ser.timeout = old_timeout
+        if drained and log:
+            logging.debug(self.logdebug + "drainQuiet: drained " + str(len(drained)) + " bytes: " + bytes2str(drained))
+        return drained
+
+    def _regular_transaction_raw(self, ser, pktStr, timeout_s=None, settle_s=None):
+        """Exact util.py-style regular transaction on an already-open serial port.
+
+        This is deliberately boring and mirrors the proven standalone path:
+            reset_input_buffer(); sleep(settle); reset_output_buffer(); write();
+            flush(); read_exact(10).
+
+        No nsCamera writeSerial/readSerial wrappers. No quiet drain. No per-attempt
+        logging. No timeout restore. The user proved util.send_regular_packet() is
+        clean even when using this same nsCamera-owned serial object, so keep this path
+        as close to util.py as possible.
+        """
+        if timeout_s is None:
+            timeout_s = self.regular_timeout_s
+        if settle_s is None:
+            settle_s = self.regular_settle_s
+
+        self.rs422_stats["regular_attempt_count"] += 1
+
+        ser.reset_input_buffer()
+        time.sleep(settle_s)
+        ser.reset_output_buffer()
+        ser.write(bytes.fromhex(pktStr))
+        ser.flush()
+
+        rx = self._read_exact_raw(ser, 10, timeout_s)
+        resp = rx.hex()
+        if len(rx) != 10:
+            self.rs422_stats["regular_short_read_count"] += 1
+            return (
+                self.logerr
+                + "readSerial: short read; expected 10 bytes, got "
+                + str(len(rx))
+                + " bytes: '"
+                + resp
+                + "'"
+            ), resp
+        return "", resp
+
+
+    def _payload_transaction_raw(self, ser, pktStr, nbytes, timeout_s=None, settle_s=None):
+        """Exact util.py-style burst/payload transaction on an already-open serial port.
+
+        Keep ser.timeout at the normal short chunk timeout and loop until an
+        absolute deadline. Do not temporarily change/restore ser.timeout.
+        """
+        if timeout_s is None:
+            timeout_s = self.datatimeout
+        if settle_s is None:
+            settle_s = self.regular_settle_s
+
+        self.rs422_stats["payload_attempt_count"] += 1
+
+        ser.reset_input_buffer()
+        time.sleep(settle_s)
+        ser.reset_output_buffer()
+        ser.write(bytes.fromhex(pktStr))
+        ser.flush()
+
+        rx = self._read_exact_raw(ser, nbytes, timeout_s)
+        resp = rx.hex()
+        if len(rx) != nbytes:
+            self.rs422_stats["payload_short_read_count"] += 1
+            return (
+                self.logerr
+                + "readSerial(payload): short read; expected "
+                + str(nbytes)
+                + " bytes, got "
+                + str(len(rx))
+                + " bytes"
+            ), resp
+        return "", resp
 
     def serialClose(self):
         """
@@ -170,31 +383,20 @@ class RS422:
     def sendCMD(self, pkt):
         """
         Submit packet and verify response packet. Recognizes readoff packet and adjusts
-        read size and timeout appropriately
-
-        Args:
-            pkt: Packet object
-
-        Returns:
-            tuple (error, response string)
+        read size and timeout appropriately.
         """
         pktStr = pkt.pktStr()
         logging.debug(self.logdebug + "sendCMD packet: " + str(pktStr))
-        self._ser.flushInput()
-        time.sleep(0.01)  # wait 10 ms in between flushing input and output buffers
-        self._ser.flushOutput()
-        self.ca.writeSerial(pktStr)
         err0 = ""
         err = ""
         resp = ""
-        tries = 3  # TODO: make a function parameter?
+        tries = self.regular_tries
 
         if (
             hasattr(self.ca, "board")
             and pktStr[4] == "0"
             and pktStr[5:8] == self.ca.board.registers["SRAM_CTL"]
         ):
-            # download data payload
             logging.info(
                 self.loginfo + "Payload size (bytes) = " + str(self.payloadsize)
             )
@@ -203,10 +405,18 @@ class RS422:
             smallresp = ""
             emptyResponse = False
             wrongSize = False
-            # TODO: refactor payload error management to another method
-            for i in range(tries):
-                err, resp = self.readSerial(
-                    self.payloadsize + 20, timeout=self.datatimeout
+            payload_tries = 3
+            self.ca.payloaderror = False
+            self.rs422_stats["payload_tx_count"] += 1
+            for i in range(payload_tries):
+                if i:
+                    self.rs422_stats["payload_retry_count"] += 1
+                err, resp = self._payload_transaction_raw(
+                    self._ser,
+                    pktStr,
+                    self.payloadsize + 20,
+                    timeout_s=self.datatimeout,
+                    settle_s=self.regular_settle_s,
                 )
                 if err:
                     logging.error(
@@ -232,6 +442,7 @@ class RS422:
                         smallresp = resp
                         self.ca.payloaderror = True
                     elif not checkCRC(resp[4:20]):
+                        self.rs422_stats["payload_preface_crc_fail_count"] += 1
                         err0 = (
                             self.logerr
                             + "sendCMD: "
@@ -242,78 +453,130 @@ class RS422:
                         self.ca.payloaderror = True
                         crcresp1 = resp
                     elif not checkCRC(resp[24:]):
-                        err0 = (
-                            self.logerr + "sendCMD: " + pktStr + " - payload CRC fail"
-                        )
+                        self.rs422_stats["payload_crc_fail_count"] += 1
+                        err0 = self.logerr + "sendCMD: " + pktStr + " - payload CRC fail"
                         logging.error(err0)
                         self.ca.payloaderror = True
                         crcresp0 = resp
                     err += err0
-                time.sleep(5)
                 if self.ca.payloaderror:
-                    # keep best results over multiple tries; e.g., if first try is
-                    #   bad CRC and second try is an incomplete payload, use the
-                    #   first payload
-                    if i == tries - 1:
+                    if i == payload_tries - 1:
+                        self.rs422_stats["payload_fail_count"] += 1
+                        if (i + 1) > self.rs422_stats["payload_max_attempts_used"]:
+                            self.rs422_stats["payload_max_attempts_used"] = i + 1
                         if crcresp0:
                             logging.error(
-                                self.logerr + "sendCMD: Unable to acquire "
-                                "CRC-confirmed payload after "
-                                + str(tries)
+                                self.logerr + "sendCMD: Unable to acquire CRC-confirmed payload after "
+                                + str(payload_tries)
                                 + " attempts. Continuing with unconfirmed payload"
                             )
                             resp = crcresp0
                         elif crcresp1:
                             logging.error(
-                                self.logerr + "sendCMD: Unable to acquire "
-                                "CRC-confirmed readoff after "
-                                + str(tries)
+                                self.logerr + "sendCMD: Unable to acquire CRC-confirmed readoff after "
+                                + str(payload_tries)
                                 + " attempts. Continuing with unconfirmed payload"
                             )
                             resp = crcresp1
                         elif wrongSize:
                             logging.error(
-                                self.logerr + "sendCMD: Unable to acquire complete "
-                                "payload after "
-                                + str(tries)
+                                self.logerr + "sendCMD: Unable to acquire complete payload after "
+                                + str(payload_tries)
                                 + " attempts. Dumping datastream to file."
                             )
                             resp = smallresp
                             self.ca.dumpNumpy(resp)
                         elif emptyResponse:
                             logging.error(
-                                self.logerr + "sendCMD: Unable to acquire any "
-                                "payload after " + str(tries) + " attempts."
+                                self.logerr + "sendCMD: Unable to acquire any payload after "
+                                + str(payload_tries)
+                                + " attempts."
                             )
                     else:
-                        logging.info(
-                            self.loginfo + "Retrying download, attempt #" + str(i + 1)
-                        )
+                        logging.info(self.loginfo + "Retrying download, attempt #" + str(i + 2))
                         err = ""
                         err0 = ""
                         self.ca.payloaderror = False
-                        self.ca.writeSerial(pktStr)
+                        time.sleep(0.1)
                 else:
+                    self.rs422_stats["payload_success_count"] += 1
+                    if (i + 1) > self.rs422_stats["payload_max_attempts_used"]:
+                        self.rs422_stats["payload_max_attempts_used"] = i + 1
                     logging.info(self.loginfo + "Download successful")
-                    if self.ca.boardname == "llnl_v4":
-                        # self.ca.setSubregister('SWACK','1')
-                        pass
                     break
-
         else:
-            # non-payload messages and workaround for initial setup before board object
-            #   has been initialized
-            time.sleep(0.03)
-            self._ser.timeout = 0.02
-            err, resp = self.readSerial(10)
-            logging.debug(self.logdebug + "sendCMD response: " + str(resp))
-            if err:
-                logging.error(
-                    self.logerr + "sendCMD: readSerial failed (regular packet) " + err
+            self.rs422_stats["regular_tx_count"] += 1
+            last_err = ""
+            last_resp = ""
+            attempts_used = 0
+            for attempt in range(tries):
+                attempts_used = attempt + 1
+                if attempt:
+                    self.rs422_stats["regular_retry_count"] += 1
+                    logging.debug(
+                        self.logdebug
+                        + "sendCMD: retrying regular packet, attempt "
+                        + str(attempt + 1)
+                        + "/"
+                        + str(tries)
+                    )
+                    time.sleep(0.05)
+                err, resp = self._regular_transaction_raw(
+                    self._ser,
+                    pktStr,
+                    timeout_s=self.regular_timeout_s,
+                    settle_s=self.regular_settle_s,
                 )
-            elif not checkCRC(resp[4:20]):
-                err = self.logerr + "sendCMD- regular packet CRC fail: " + resp
-                logging.error(err)
+                logging.debug(self.logdebug + "sendCMD response: " + str(resp))
+                last_err = err
+                last_resp = resp
+                if err:
+                    logging.debug(self.logdebug + "sendCMD: readSerial failed (regular packet) " + err)
+                    continue
+                if len(resp) != 20:
+                    self.rs422_stats["regular_wrong_length_count"] += 1
+                    err = self.logerr + "sendCMD- regular packet wrong length: " + resp
+                    logging.debug(err)
+                    last_err = err
+                    continue
+                # Expected response command is request command ORed with 0x8:
+                #   read  command 0x1 -> response 0x9
+                #   write command 0x0 -> response 0x8
+                try:
+                    expected_resp_cmd = format(int(pktStr[4], 16) | 0x8, "x")
+                except Exception:
+                    expected_resp_cmd = ""
+                if resp[0:4].lower() != "aaaa" or resp[4].lower() != expected_resp_cmd:
+                    err = (
+                        self.logerr
+                        + "sendCMD- regular packet bad response frame: "
+                        + resp
+                        + "; expected response cmd "
+                        + expected_resp_cmd
+                    )
+                    self.rs422_stats["regular_bad_frame_count"] += 1
+                    logging.debug(err)
+                    last_err = err
+                    continue
+                if not checkCRC(resp[4:20]):
+                    self.rs422_stats["regular_crc_fail_count"] += 1
+                    err = self.logerr + "sendCMD- regular packet CRC fail: " + resp
+                    logging.debug(err)
+                    last_err = err
+                    continue
+                self.rs422_stats["regular_success_count"] += 1
+                if attempts_used > self.rs422_stats["regular_max_attempts_used"]:
+                    self.rs422_stats["regular_max_attempts_used"] = attempts_used
+                err = ""
+                break
+            else:
+                self.rs422_stats["regular_fail_count"] += 1
+                if attempts_used > self.rs422_stats["regular_max_attempts_used"]:
+                    self.rs422_stats["regular_max_attempts_used"] = attempts_used
+                err = last_err
+                resp = last_resp
+                if err:
+                    logging.error(err)
         return err, resp
 
     def arm(self, mode):
@@ -437,15 +700,9 @@ class RS422:
             parsed = generateFrames(self.ca, read_burst_data, columns)
             return parsed, len(read_burst_data) // 2, errortemp
 
-    def writeSerial(self, outstring, timeout):
+    def writeSerial(self, outstring, timeout=None):
         """
-        Transmit string to board
-
-        Args:
-            outstring: string to write
-            timeout: serial timeout in sec
-        Returns:
-            integer length of string written to serial port
+        Transmit string to board.
         """
         logging.debug(
             self.logdebug
@@ -454,24 +711,21 @@ class RS422:
             + "; timeout = "
             + str(timeout)
         )
-        if timeout:
-            self._ser.timeout = timeout
+        old_write_timeout = self._ser.write_timeout
+        if timeout is not None:
+            self._ser.write_timeout = timeout
         else:
-            self._ser.timeout = self.write_timeout
-        lengthwritten = self._ser.write(str2bytes(outstring))
-        self._ser.timeout = self.read_timeout  # reset if changed above
+            self._ser.write_timeout = self.write_timeout
+        try:
+            lengthwritten = self._ser.write(str2bytes(outstring))
+            self._ser.flush()
+        finally:
+            self._ser.write_timeout = old_write_timeout
         return lengthwritten
 
     def readSerial(self, size, timeout=None):
         """
-        Read bytes from the serial port. Does not verify packets.
-
-        Args:
-           size: number of bytes to read
-           timeout: serial timeout in sec
-
-        Returns:
-           tuple (error string, string read from serial port)
+        Read exactly 'size' bytes from the serial port using a deadline loop.
         """
         logging.debug(
             self.logdebug
@@ -480,18 +734,24 @@ class RS422:
             + "; timeout = "
             + str(timeout)
         )
+        if timeout is None:
+            timeout = self.read_timeout
+        resp_bytes = self._read_exact_raw(self._ser, size, timeout)
+        resp = bytes2str(resp_bytes)
         err = ""
-        if timeout:
-            self._ser.timeout = timeout
-        else:
-            self._ser.timeout = self.read_timeout
-        resp = self._ser.read(size)
-        if len(resp) < 10:  # bytes
-            err += (
-                self.logerr + "readSerial : packet too small: '" + bytes2str(resp) + "'"
+        if len(resp_bytes) != size:
+            err = (
+                self.logerr
+                + "readSerial: short read; expected "
+                + str(size)
+                + " bytes, got "
+                + str(len(resp_bytes))
+                + " bytes: '"
+                + resp
+                + "'"
             )
             logging.error(err)
-        return err, bytes2str(resp)
+        return err, resp
 
     def closeDevice(self):
         """
