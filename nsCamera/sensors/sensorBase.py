@@ -13,7 +13,7 @@ and Lawrence Livermore National Security, LLC (LLNS) for the operation of LLNL.
 'nsCamera' is distributed under the terms of the MIT license. All new contributions must
 be made under this license.
 
-Version: 2.1.2 (February 2025)
+Version: 2.1.4 (May 2026)
 """
 import itertools
 import logging
@@ -30,9 +30,6 @@ class sensorBase(object):
 
     def __init__(self, camassem):
         self.ca = camassem
-        # skip board settings if no board object exists
-        if hasattr(self.ca, "board"):
-            self.init_board_specific()
 
         (
             self.logcrit,
@@ -41,6 +38,26 @@ class sensorBase(object):
             self.loginfo,
             self.logdebug,
         ) = makeLogLabels(self.ca.logtag, self.loglabel)
+
+        # skip board settings if no board object exists
+        if hasattr(self.ca, "board"):
+            if not self.check_board_sensor_compatibility():
+                raise ValueError(
+                    "Incompatible board/sensor selection: board='{}', sensor='{}'".format(
+                        getattr(self.ca, "boardname", None),
+                        getattr(self.ca, "sensorname", None),
+                    )
+                )
+
+            self.init_board_specific()
+
+        # skip assignment if no comms object exists
+        if hasattr(self.ca, "comms"):
+            self.ca.comms.payloadsize = (
+                self.width * self.height * self.nframes * self.bytesperpixel
+            )
+
+        logging.info(self.loginfo + "Initializing sensor object")
 
         # skip assignment if no comms object exists
         if hasattr(self.ca, "comms"):
@@ -53,13 +70,69 @@ class sensorBase(object):
     def init_board_specific(self):
         """Initialize aliases and subregisters specific to the current board and sensor."""
 
-        if self.ca.sensorname == "icarus" or self.ca.sensorname == "icarus2":
+        sensorname = getattr(self.ca, "sensorname", "").lower()
+
+        if sensorname in {"icarus", "icarus2", "hyperion"}:
             self.ca.board.subreg_aliases = self.ca.board.icarus_subreg_aliases
             self.ca.board.monitor_controls = self.ca.board.icarus_monitor_controls
-        else:
+        elif sensorname == "daedalus":
             self.ca.board.subreg_aliases = self.ca.board.daedalus_subreg_aliases
             self.ca.board.monitor_controls = self.ca.board.daedalus_monitor_controls
+        else:
+            err = (
+                self.logerr
+                + "No board-specific alias mapping defined for sensor '"
+                + str(sensorname)
+                + "'."
+            )
+            logging.error(err)
+            raise ValueError(err)
+            
+    def check_board_sensor_compatibility(self):
+        """
+        Check whether the selected board supports the selected sensor.
 
+        Returns:
+            bool: True if compatible, False otherwise.
+        """
+        boardname = getattr(self.ca, "boardname", "").lower()
+        sensorname = getattr(self.ca, "sensorname", "").lower()
+
+        board_sensor_compatibility = {
+            "nova": {"icarus2", "hyperion"},
+            "nova_v1": {"icarus2", "hyperion"},
+        }
+
+        # Only enforce compatibility for boards explicitly listed above.
+        if boardname not in board_sensor_compatibility:
+            return True
+
+        allowed_sensors = board_sensor_compatibility[boardname]
+
+        if sensorname not in allowed_sensors:
+            err = (
+                self.logerr
+                + "Sensor/board compatibility error: board '"
+                + str(boardname)
+                + "' is only compatible with sensors "
+                + str(sorted(allowed_sensors))
+                + ", but selected sensor is '"
+                + str(sensorname)
+                + "'."
+            )
+            logging.error(err)
+            return False
+
+        logging.info(
+            self.loginfo
+            + "Sensor/board compatibility confirmed: board '"
+            + str(boardname)
+            + "' with sensor '"
+            + str(sensorname)
+            + "'."
+        )
+        return True
+        
     # TODO: Check if 'jumpers' still apply for newer boards
     def checkSensorVoltStat(self):
         """

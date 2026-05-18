@@ -13,7 +13,8 @@ and Lawrence Livermore National Security, LLC (LLNS) for the operation of LLNL.
 'nsCamera' is distributed under the terms of the MIT license. All new contributions must
 be made under this license.
 
-Version: 2.1.2     (February 2025)
+Version: 2.1.4     (May 2026)
+         2.1.2     (February 2025)
 
          2.1.1     (July 2021)
          2.1.0     (October 2020)
@@ -38,7 +39,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="nsCamera",
-    version="2.1.2",
+    version="2.1.4",
     author="Jeremy Martin Hill",
     author_email="jerhill@llnl.gov",
     packages=find_packages(exclude=["_archive.*", "output", "*.output", "*.output.*"]),

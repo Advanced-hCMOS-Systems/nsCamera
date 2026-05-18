@@ -14,7 +14,7 @@ and Lawrence Livermore National Security, LLC (LLNS) for the operation of LLNL.
 'nsCamera' is distributed under the terms of the MIT license. All new contributions must
 be made under this license.
 
-Version: 2.1.3 (April 2026) - AHS RS422 fix for stable comms
+Version: 2.1.4 (May 2026) - AHS RS422 fix for stable comms
 """
 
 import logging
@@ -45,15 +45,18 @@ class RS422:
         closeDevice() - close serial connections
     """
 
-    def __init__(self, camassem, baud=921600, par="N", stop=1):
+    def __init__(self, camassem, baud=None, par="N", stop=1):
         """
         Args:
             camassem: parent cameraAssembler object
-            baud: bits per second
+            baud: bits per second; defaults to 4000000 for nova_v1 (tested with
+                FTDI USB-COM422-PLUS2), 921600 for all other boards
             par: parity type. Default changed to "N" for 921600 8N1.
             stop: number of stop bits
         """
         self.ca = camassem
+        if baud is None:
+            baud = 4000000 if getattr(camassem, "boardname", "").lower() == "nova_v1" else 921600
         self.logcrit = self.ca.logcritbase + "[RS422] "
         self.logerr = self.ca.logerrbase + "[RS422] "
         self.logwarn = self.ca.logwarnbase + "[RS422] "
@@ -75,7 +78,7 @@ class RS422:
         self.stop = stop
         self.read_timeout = 3
         self.write_timeout = 1
-        self.serial_chunk_timeout = 0.05
+        self.serial_chunk_timeout = 0.01
         self.tx_settle = 0.01
         self.rx_quiet_s = 0.05
         self.rx_drain_max_s = 0.5
@@ -123,23 +126,11 @@ class RS422:
             try:
                 ser = self._open_serial(p, timeout=self.serial_chunk_timeout)
 
-                # Board-identification probe. Treat this exactly like a normal
-                # regular command: the USB-RS422 path can return short/corrupt
-                # packets intermittently, so do not reject a port after one bad
-                # probe. The expected response to read command 0x1 is command 0x9.
+                # Board-identification probe. Single attempt.
+                # Expected response to read command 0x1 is command 0x9.
                 resp = ""
                 probe_ok = False
-                for probe_attempt in range(self.regular_tries):
-                    if probe_attempt:
-                        logging.debug(
-                            self.logdebug
-                            + "Init probe: retrying, attempt "
-                            + str(probe_attempt + 1)
-                            + "/"
-                            + str(self.regular_tries)
-                        )
-                        time.sleep(0.05)
-
+                for probe_attempt in range(1):
                     err, resp = self._regular_transaction_raw(
                         ser,
                         "aaaa1000000000001a84",
@@ -172,6 +163,8 @@ class RS422:
                         logging.info(self.loginfo + "LLNLv1 board detected")
                     elif boardid == "84":
                         logging.info(self.loginfo + "LLNLv4 board detected")
+                    elif boardid == "05":
+                        logging.info(self.loginfo + "AHS Nova_v1 board detected")
                     else:
                         logging.info(self.loginfo + "unidentified board detected")
                     logging.info(self.loginfo + "connected to " + p)
@@ -347,7 +340,7 @@ class RS422:
         absolute deadline. Do not temporarily change/restore ser.timeout.
         """
         if timeout_s is None:
-            timeout_s = self.datatimeout
+            timeout_s = self._payload_timeout(nbytes)
         if settle_s is None:
             settle_s = self.regular_settle_s
 
@@ -372,6 +365,15 @@ class RS422:
                 + " bytes"
             ), resp
         return "", resp
+
+    def _payload_timeout(self, nbytes, margin=4.0, overhead=5.0, minimum=5.0):
+        """Timeout scaled to expected transfer size and baud rate.
+
+        Replaces the fixed datatimeout for burst reads so a truncated transfer
+        triggers retry in O(transfer_time) rather than a fixed 90 s.
+        """
+        transfer_s = nbytes / (self.baud / 10.0)  # 8N1: 10 bits per byte
+        return max(transfer_s * margin + overhead, minimum)
 
     def serialClose(self):
         """
@@ -497,7 +499,7 @@ class RS422:
                         err = ""
                         err0 = ""
                         self.ca.payloaderror = False
-                        time.sleep(0.1)
+                        time.sleep(0.02)
                 else:
                     self.rs422_stats["payload_success_count"] += 1
                     if (i + 1) > self.rs422_stats["payload_max_attempts_used"]:

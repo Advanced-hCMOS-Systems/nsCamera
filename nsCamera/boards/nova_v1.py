@@ -1,0 +1,935 @@
+# -*- coding: utf-8 -*-
+"""
+Nova board definition, including monitors, DACS, and other board-specific settings
+
+Author: Matthew Dayton (matthew@hcmos.com)
+
+Version: 1.1.2 (May 2026)
+"""
+
+import logging
+import string
+import time
+from collections import OrderedDict
+
+from nsCamera.utils.Packet import Packet
+from nsCamera.utils.Subregister import SubRegister
+
+
+class nova_v1:
+    """
+    Advanced hCMOS Systems Nova 
+
+    Compatible communication protocols: RS422, GigE
+    Compatible sensors: icarus2
+    """
+
+    # FPGA register map - use '.upper()' on keys to ensure uppercase lookup
+    registers = OrderedDict(
+        {
+            "FPGA_NUM": "000",
+            "FPGA_REV": "001",
+            "HS_TIMING_CTL": "010",
+            "HS_TIMING_DATA_ALO": "013",
+            "HS_TIMING_DATA_AHI": "014",
+            "HS_TIMING_DATA_BLO": "015",
+            "HS_TIMING_DATA_BHI": "016",
+            "SW_TRIGGER_CONTROL": "017",
+            "SW_COARSE_CONTROL": "01C",
+            "STAT_REG": "024",
+            "CTRL_REG": "025",
+            "DAC_CTL": "026",
+            "DAC_REG_A_AND_B": "027",
+            "DAC_REG_C_AND_D": "028",
+            "DAC_REG_E_AND_F": "029",
+            "DAC_REG_G_AND_H": "02A",
+            "SW_RESET": "02D",
+            "HST_SETTINGS": "02E",
+            "STAT_REG_SRC": "02F",
+            "STAT_REG2": "030",
+            "STAT_REG2_SRC": "031",
+            "ADC_BYTECOUNTER": "032",
+            "RBP_PIXEL_CNTR": "033",
+            "DIAG_MAX_CNT_0": "034",
+            "DIAG_MAX_CNT_1": "035",
+            "DIAG_CNTR_VAL_0": "036",
+            "DIAG_CNTR_VAL_1": "037",
+            "STAT_EDGE_DETECTS": "038",
+            "TRIGGER_CTL": "03A",
+            "SRAM_CTL": "03B",
+            "TIMER_CTL": "03C",
+            "TIMER_VALUE": "03D",
+            "HSTALLWEN_WAIT_TIME": "03F",
+            "FPA_ROW_INITIAL": "042",
+            "FPA_ROW_FINAL": "043",
+            "FPA_FRAME_INITIAL": "044",
+            "FPA_FRAME_FINAL": "045",
+            "FPA_DIVCLK_EN_ADDR": "046",
+            "FPA_OSCILLATOR_SEL_ADDR": "047",
+            "SUSPEND_TIME": "04D",
+            "FPA_INTERFACE_STATE": "04E",
+            "DELAY_READOFF": "04F",
+            "STAT_REG_SEC": "060",
+            "ADC_CTL": "090",
+            "ADC1_CONFIG_DATA": "091",
+            "ADC2_CONFIG_DATA": "092",
+            "ADC3_CONFIG_DATA": "093",
+            "ADC4_CONFIG_DATA": "094",
+            "ADC5_DATA_1": "095",
+            "ADC5_DATA_2": "096",
+            "ADC5_DATA_3": "097",
+            "ADC5_DATA_4": "098",
+            "ADC6_DATA_1": "099",
+            "ADC6_DATA_2": "09A",
+            "ADC6_DATA_3": "09B",
+            "ADC6_DATA_4": "09C",
+            "ADC_PPER": "09D",
+            "ADC_RESET": "09E",
+        }
+    )
+
+    subregisters = [
+        ## R/W subregs
+        # Consistent with ICD usage, start_bit is msb e.g., for [7..0] start_bit is 7.
+        ("HST_MODE", "HS_TIMING_CTL", 0, 1, True),
+        ("SW_TRIG_START", "SW_TRIGGER_CONTROL", 0, 1, True),
+        ("SW_COARSE_TRIGGER", "SW_COARSE_CONTROL", 0, 1, True),
+        ("LED_EN", "CTRL_REG", 1, 1, True),
+        ("COLQUENCHEN", "CTRL_REG", 2, 1, True),
+        ("POWERSAVE", "CTRL_REG", 3, 1, True),
+        ("PDBIAS_LOW", "CTRL_REG", 6, 1, True),
+        ("DACA", "DAC_REG_A_AND_B", 31, 16, True),
+        ("DACB", "DAC_REG_A_AND_B", 15, 16, True),
+        ("DACC", "DAC_REG_C_AND_D", 31, 16, True),
+        ("DACD", "DAC_REG_C_AND_D", 15, 16, True),
+        ("DACE", "DAC_REG_E_AND_F", 31, 16, True),
+        ("DACF", "DAC_REG_E_AND_F", 15, 16, True),
+        ("DACG", "DAC_REG_G_AND_H", 31, 16, True),
+        ("DACH", "DAC_REG_G_AND_H", 15, 16, True),
+        ("RESET", "SW_RESET", 0, 1, True),
+        ("HST_SW_CTL_EN", "HST_SETTINGS", 0, 1, True),
+        ("SW_HSTALLWEN", "HST_SETTINGS", 1, 1, True),
+        ("MAXERR_FIT", "DIAG_MAX_CNT_0", 31, 16, True),
+        ("MAXERR_SRT", "DIAG_MAX_CNT_0", 7, 8, True),
+        ("MAXERR_UTTR", "DIAG_MAX_CNT_1", 31, 16, True),
+        ("MAXERR_URTR", "DIAG_MAX_CNT_1", 15, 16, True),
+        ("HW_TRIG_EN", "TRIGGER_CTL", 0, 1, True),
+        ("SW_TRIG_EN", "TRIGGER_CTL", 2, 1, True),
+        ("READOFF_DELAY_EN", "TRIGGER_CTL", 4, 1, True),
+        ("READ_SRAM", "SRAM_CTL", 0, 1, True),
+        ("RESET_TIMER", "TIMER_CTL", 0, 1, True),
+        ("OSC_SELECT", "FPA_OSCILLATOR_SEL_ADDR", 1, 2, True),
+        ("PPER", "ADC_PPER", 7, 8, True),
+        ## Read-only subregs
+        # Consistent with ICD usage, start_bit is msb e.g., for [7..0] start_bit is 7.
+        # WARNING: reading a subregister may clear the entire associated register!
+        ("SRAM_READY", "STAT_REG", 0, 1, False),
+        ("STAT_COARSE", "STAT_REG", 1, 1, False),
+        ("STAT_FINE", "STAT_REG", 2, 1, False),
+        ("STAT_SENSREADIP", "STAT_REG", 5, 1, False),
+        ("STAT_SENSREADDONE", "STAT_REG", 6, 1, False),
+        ("STAT_SRAMREADSTART", "STAT_REG", 7, 1, False),
+        ("STAT_SRAMREADDONE", "STAT_REG", 8, 1, False),
+        ("STAT_HSTCONFIGSTART", "STAT_REG", 9, 1, False),
+        ("STAT_ADCSCONFIGURED", "STAT_REG", 10, 1, False),
+        ("STAT_DACSCONFIGURED", "STAT_REG", 11, 1, False),
+        ("STAT_TIMERCOUNTERRESET", "STAT_REG", 13, 1, False),
+        ("STAT_HSTCONFIGDONE", "STAT_REG", 16, 1, False),
+        ("STAT_ARMED", "STAT_REG", 14, 1, False),
+        ("STAT_TEMP", "STAT_REG", 23, 7, False),
+        ("STAT_PRESS", "STAT_REG", 31, 8, False),
+        ("FPA_IF_TO", "STAT_REG2", 0, 1, False),
+        ("SRAM_RO_TO", "STAT_REG2", 1, 1, False),
+        ("PIXELRD_TOUT_ERR", "STAT_REG2", 2, 1, False),
+        ("UART_TX_TO_RST", "STAT_REG2", 3, 1, False),
+        ("UART_RX_TO_RST", "STAT_REG2", 4, 1, False),
+        ("FIT_COUNT", "DIAG_CNTR_VAL_0", 31, 16, False),
+        ("SRT_COUNT", "DIAG_CNTR_VAL_0", 7, 8, False),
+        ("UTTR_COUNT", "DIAG_CNTR_VAL_1", 31, 16, False),
+        ("URTR_COUNT", "DIAG_CNTR_VAL_1", 15, 16, False),
+        # monitor ADC channels defined here - the poll period will need to be set
+        #   during camera initialization (x98)
+        ("MON_CH1", "ADC5_DATA_1", 11, 12, False),
+        ("MON_CH2", "ADC5_DATA_1", 23, 12, False),
+        ("MON_CH3", "ADC5_DATA_2", 11, 12, False),
+        ("MON_CH4", "ADC5_DATA_2", 23, 12, False),
+        ("MON_CH5", "ADC5_DATA_3", 11, 12, False),
+        ("MON_CH6", "ADC5_DATA_3", 23, 12, False),
+        ("MON_CH7", "ADC5_DATA_4", 11, 12, False),
+        ("MON_CH8", "ADC5_DATA_4", 23, 12, False),
+        ("MON_CH9", "ADC6_DATA_1", 11, 12, False),
+        ("MON_CH10", "ADC6_DATA_1", 23, 12, False),
+        ("MON_CH11", "ADC6_DATA_2", 11, 12, False),
+        ("MON_CH12", "ADC6_DATA_2", 23, 12, False),
+        ("MON_CH13", "ADC6_DATA_3", 11, 12, False),
+        ("MON_CH14", "ADC6_DATA_3", 23, 12, False),
+        ("MON_CH15", "ADC6_DATA_4", 11, 12, False),
+        ("MON_CH16", "ADC6_DATA_4", 23, 12, False),
+    ]
+
+    def __init__(self, camassem):
+        self.ca = camassem
+        self.logcrit = self.ca.logcritbase + "[Nova_v1] "
+        self.logerr = self.ca.logerrbase + "[Nova_v1] "
+        self.logwarn = self.ca.logwarnbase + "[Nova_v1] "
+        self.loginfo = self.ca.loginfobase + "[Nova_v1] "
+        self.logdebug = self.ca.logdebugbase + "[Nova_v1] "
+        logging.info(self.loginfo + "Initializing board object")
+        self.VREF = 3.3  # must be supplied externally for ADC128S102
+        self.ADC5_mult = 1
+
+        # ADC128S102; False => monitor range runs 0 to monmax, True => +/- monmax
+        self.ADC5_bipolar = False
+        self.rs422_baud = 921600
+        self.rs422_cmd_wait = 0.3
+
+        fpgaNum_pkt = Packet(cmd="1", addr=self.registers["FPGA_NUM"])
+        fpgaRev_pkt = Packet(cmd="1", addr=self.registers["FPGA_REV"])
+
+        _, _ = self.ca.sendCMD(fpgaNum_pkt)  # dummy duplicate call
+        err, rval = self.ca.sendCMD(fpgaNum_pkt)
+        self.ca.FPGANum = rval[8:16]
+
+        err, rval = self.ca.sendCMD(fpgaRev_pkt)
+        self.ca.FPGAVersion = rval[8:16]
+
+ 
+        # map channels to signal names for abstraction at the camera assembler level;
+        #   each requires a corresponding entry in 'subregisters'
+        self.icarus_subreg_aliases = OrderedDict(
+            {
+                # DAC control aliases
+                "HST_A_PDELAY": "DACA",
+                "HST_A_NDELAY": "DACB",
+                "HST_B_PDELAY": "DACC",
+                "HST_B_NDELAY": "DACD",
+                "HST_RO_IBIAS": "DACE",
+                "HST_RO_NC_IBIAS": "DACE",
+                "HST_OSC_RELAX_VREF": "DACF",
+                "OSC_RELAX_VREF": "DACF",
+                "VAB": "DACG",
+                "VRST": "DACH",
+                "RELAX_OSC_CTL": "DACE",   # Table labels MON_CH15 as DAC_E_RELAX_OSC_CTL
+
+                # Monitor aliases
+                "PDBIAS": "MON_CH1",
+                "PDBIAS_MONITOR": "MON_CH1",
+                "MON_TSENSE": "MON_CH3",
+                "MON_TEMP": "MON_CH3",
+                "MON_COL_TOP_IBIAS_IN": "MON_CH4",
+                "MON_HST_RO_IBIAS": "MON_CH5",
+                "MON_HST_RO_NC_IBIAS": "MON_CH5",
+                "MON_VAB": "MON_CH6",
+                "DOSIMETER": "MON_CH7",
+                "MON_VRST": "MON_CH8",
+                "MON_COL_BOT_IBIAS_IN": "MON_CH9",
+                "MON_HST_A_PDELAY": "MON_CH10",
+                "MON_HST_B_NDELAY": "MON_CH11",
+                "MON_HST_OSC_RELAX_VREF": "MON_CH13",
+                "MON_HST_OSC_VREF_IN": "MON_CH13",
+                "MON_HST_B_PDELAY": "MON_CH14",
+                "MON_RELAX_OSC_CTL": "MON_CH15",
+                "MON_HST_OSC_CTL": "MON_CH15",
+                "MON_HST_A_NDELAY": "MON_CH16",
+
+                # Short DAC monitor aliases
+                "MON_CHA": "MON_CH10",  # DAC_A_HST_A_PDELAY
+                "MON_CHB": "MON_CH16",  # DAC_B_HST_A_NDELAY
+                "MON_CHC": "MON_CH14",  # DAC_C_HST_B_PDELAY
+                "MON_CHD": "MON_CH11",  # DAC_D_HST_B_NDELAY
+                "MON_CHE": "MON_CH5",   # DAC_E_HST_RO_IBIAS
+                "MON_CHF": "MON_CH13",  # DAC_F_OSC_RELAX_VREF
+                "MON_CHG": "MON_CH6",   # DAC_G_VAB
+                "MON_CHH": "MON_CH8",   # DAC_H_VRST
+            }
+        )
+
+        # Read-only; identifies controls corresponding to monitors
+        self.icarus_monitor_controls = OrderedDict(
+            {
+                "MON_CH10": "DACA",  # DAC_A_HST_A_PDELAY
+                "MON_CH16": "DACB",  # DAC_B_HST_A_NDELAY
+                "MON_CH14": "DACC",  # DAC_C_HST_B_PDELAY
+                "MON_CH11": "DACD",  # DAC_D_HST_B_NDELAY
+                "MON_CH5": "DACE",   # DAC_E_HST_RO_IBIAS
+                "MON_CH13": "DACF",  # DAC_F_OSC_RELAX_VREF
+                "MON_CH6": "DACG",   # DAC_G_VAB
+                "MON_CH8": "DACH",   # DAC_H_VRST
+            }
+        )
+        ## Daedalus is not implemented yet for nova, here for future use
+        self.daedalus_subreg_aliases = OrderedDict(
+            {
+                "HST_OSC_VREF_IN": "DACC",
+                "HST_OSC_CTL": "DACE",
+                "COL_TST_IN": "DACF",
+                "VAB": "DACG",
+                "VRST": "DACH",
+                "MON_PRES_MINUS": "MON_CH1",
+                "MON_PRES_PLUS": "MON_CH2",
+                "MON_TEMP": "MON_CH3",
+                "MON_VAB": "MON_CH6",
+                "MON_HST_OSC_CTL": "MON_CH7",
+                "MON_TSENSE_OUT": "MON_CH10",
+                "MON_BGREF": "MON_CH11",
+                "DOSIMETER": "MON_CH12",
+                "MON_HST_RO_NC_IBIAS": "MON_CH13",
+                "MON_HST_OSC_VREF_IN": "MON_CH14",
+                "MON_COL_TST_IN": "MON_CH15",
+                "MON_HST_OSC_PBIAS_PAD": "MON_CH16",
+                "MON_CHC": "MON_CH14",
+                "MON_CHE": "MON_CH7",
+                "MON_CHF": "MON_CH15",
+                "MON_CHG": "MON_CH6",
+                "MON_CHH": "MON_CH8",
+            }
+        )
+        # Read-only; identifies controls corresponding to monitors
+        self.daedalus_monitor_controls = OrderedDict(
+            {
+                "MON_CH14": "DACC",
+                "MON_CH7": "DACE",
+                "MON_CH15": "DACF",
+                "MON_CH6": "DACG",
+                "MON_CH8": "DACH",
+            }
+        )
+        self.subreglist = []
+        for s in self.subregisters:
+            self.subreglist.append(s[0].upper())
+            sr = SubRegister(
+                self,
+                name=s[0].upper(),
+                register=s[1].upper(),
+                start_bit=s[2],
+                width=s[3],
+                writable=s[4],
+            )
+            setattr(self, s[0].upper(), sr)
+
+        # set voltage ranges for all DACs - WARNING: actual output voltage limited to
+        #   external supply (3.6 V)
+        # setpot('potx', n) will generate 3.3 V for all n > .66
+        for n in range(0, 8):
+            potname = "DAC" + string.ascii_uppercase[n]
+            potobj = getattr(self, potname)
+            potobj.minV = 0
+            potobj.maxV = 5  #
+            potobj.resolution = (
+                1.0 * potobj.maxV - potobj.minV
+            ) / potobj.max_value  # 76 uV / LSB
+
+    def initBoard(self):
+        """
+        Register and reset board, set up firmware for sensor
+
+        Returns:
+            tuple (error string, response string) from final control message
+        """
+        logging.info(self.loginfo + "initBoard Nova_v1")
+        control_messages = []
+        self.clearStatus()
+        self.configADCs()
+        return self.ca.submitMessages(control_messages, " initBoard: ")
+
+    def initPots(self):
+        """
+        Initialize Nova_v1 DAC values and latch them into the sensor.
+
+        Returns:
+            tuple (error string, response string)
+        """
+        logging.info(self.loginfo + "initPots")
+
+        dac_defaults = OrderedDict(
+            {
+                "DACA": 0.0,   # DAC_A_HST_A_PDELAY
+                "DACB": 3.3,   # DAC_B_HST_A_NDELAY
+                "DACC": 0.0,   # DAC_C_HST_B_PDELAY
+                "DACD": 3.3,   # DAC_D_HST_B_NDELAY
+                "DACE": 2.43,  # DAC_E_HST_RO_IBIAS
+                "DACF": 1.0,   # DAC_F_OSC_RELAX_VREF
+                "DACG": 0.5,   # DAC_G_VAB
+                "DACH": 0.3,   # DAC_H_VRST
+            }
+        )
+
+        err = ""
+
+        for dac_name, voltage in dac_defaults.items():
+            logging.info(
+                self.loginfo
+                + "Setting "
+                + dac_name
+                + " to "
+                + "{0:.3f}".format(voltage)
+                + " V"
+            )
+
+            result = self.ca.setPotV(dac_name, voltage)
+            err_i = result[0] if isinstance(result, tuple) else ""
+
+            if err_i:
+                err += err_i
+
+        latch_err, latch_rval = self.latchPots()
+        err += latch_err
+
+        if err:
+            logging.error(self.logerr + "initPots: one or more DAC settings failed")
+
+        return err, latch_rval
+
+    def latchPots(self):
+        """
+        Latch DAC settings into sensor
+
+        Returns:
+            tuple (error string, response string) from final control message
+        """
+        logging.info(self.loginfo + "latchPots")
+        control_messages = [
+            ("DAC_CTL", "00000001"),  # latches register settings for DACA
+            ("DAC_CTL", "00000003"),
+            ("DAC_CTL", "00000005"),
+            ("DAC_CTL", "00000007"),
+            ("DAC_CTL", "00000009"),
+            ("DAC_CTL", "0000000B"),
+            ("DAC_CTL", "0000000D"),
+            ("DAC_CTL", "0000000F"),
+        ]
+        return self.ca.submitMessages(control_messages, " latchPots: ")
+
+    def initSensor(self):
+        """
+        Register sensor, set default timing settings
+
+        Returns:
+            tuple (error string, response string) from final control message
+        """
+        logging.info(self.loginfo + "initSensor")
+        if int(self.ca.FPGANum[7]) != self.ca.sensor.fpganumID:
+            logging.warning(
+                self.logwarn + "unable to confirm sensor compatibility with FPGA"
+            )
+        self.registers.update(self.ca.sensor.sens_registers)
+        self.subregisters.extend(self.ca.sensor.sens_subregisters)
+        for s in self.ca.sensor.sens_subregisters:
+            sr = SubRegister(
+                self,
+                name=s[0].upper(),
+                register=s[1].upper(),
+                start_bit=s[2],
+                width=s[3],
+                writable=s[4],
+            )
+            setattr(self, s[0].upper(), sr)
+            self.subreglist.append(s[0])
+        # TODO: self.ca.checkSensorVoltStat() # SENSOR_VOLT_STAT and SENSOR_VOLT_CTL are
+        #   deactivated for v4 icarus and daedalus firmware for now, is this permanent?
+        control_messages = self.ca.sensorSpecific() + [
+            # ring w/caps=01, relax=00, ring w/o caps = 02
+            ("OSC_SELECT", "00"),
+            ("FPA_DIVCLK_EN_ADDR", "00000001"),
+        ]
+        return self.ca.submitMessages(control_messages, " initSensor: ")
+
+    def configADCs(self):
+        """
+        Sets default ADC configuration (does not latch settings)
+
+        Returns:
+            tuple (error string, response string) from final control message
+        """
+        logging.info(self.loginfo + "configADCs")
+
+        control_messages = [
+            # just in case ADC_RESET was set on any of the ADCs (pull all ADCs out of
+            #   reset)
+            ("ADC_RESET", "00000000"),
+            # workaround for uncertain behavior after previous readoff
+            ("ADC1_CONFIG_DATA", "FFFFFFFF"),
+            ("ADC2_CONFIG_DATA", "FFFFFFFF"),
+            ("ADC3_CONFIG_DATA", "FFFFFFFF"),
+            ("ADC4_CONFIG_DATA", "FFFFFFFF"),
+            ("ADC_CTL", "FFFFFFFF"),
+            ("ADC1_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
+            ("ADC2_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
+            ("ADC3_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
+            ("ADC4_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
+        ]
+        return self.ca.submitMessages(control_messages, " configADCs: ")
+
+    def softReboot(self):
+        """
+        Perform software reboot of board. WARNING: board reboot will likely prevent
+          correct response and therefore will generate an error message
+
+        Returns:
+            tuple (error string, response string) from final control message
+        """
+        logging.info(self.loginfo + "reboot")
+        control_messages = [("RESET", "0")]
+        return self.ca.submitMessages(control_messages, " disarm: ")
+
+    def disarm(self):
+        """
+        Takes camera out of trigger wait state. Has no effect if camera is not in wait
+          state.
+
+        Returns:
+            tuple (error string, response string) from final control message
+        """
+        logging.info(self.loginfo + "disarm")
+        self.ca.clearStatus()
+        self.ca.armed = False
+        control_messages = [
+            ("HW_TRIG_EN", "0"),
+            ("SW_TRIG_EN", "0"),
+        ]
+        self.ca.comms.skipError = False
+        return self.ca.submitMessages(control_messages, " disarm: ")
+
+    def startCapture(self, mode="Hardware"):
+        """
+        Selects trigger mode and enables board for image capture
+
+        Args:
+            mode: trigger mode ("hardware"|"software"|"dual|"h"|"s"|"d" , is case-
+              insensitive)
+
+        Returns:
+            tuple (error string, response string) from final control message
+        """
+        logging.info(self.loginfo + "startCapture")
+        if self.ca.sensmanual:
+            timingReg = "MANSHUT_MODE"
+        else:
+            timingReg = "HST_MODE"
+
+        if mode.upper()[0] == "S":  # SOFTWARE
+            trigmess = [
+                ("HW_TRIG_EN", "0"),
+                ("SW_TRIG_EN", "1"),
+                ("SW_TRIG_START", "1"),
+            ]
+        else:  # HARDWARE
+            trigmess = [
+                ("SW_TRIG_EN", "0"),
+                ("HW_TRIG_EN", "1"),
+            ]
+
+        control_messages = [
+            ("ADC_CTL", "0000000F"),  # configure all ADCs
+            (timingReg, "1"),
+        ]
+
+        control_messages.extend(trigmess)
+        return self.ca.submitMessages(control_messages, " startCapture: ")
+
+    def readSRAM(self):
+        """
+        Start readoff of SRAM
+
+        Returns:
+            tuple (error string, response string from register set)
+        """
+        logging.info(self.loginfo + "readSRAM")
+        control_messages = [("READ_SRAM", "1")]
+        return self.ca.submitMessages(control_messages, " readSRAM: ")
+
+    def waitForSRAM(self, timeout):
+        """
+        Wait until subreg 'SRAM_READY' flag is true or timeout is exceeded;
+          timeout = None or zero means wait indefinitely
+
+        Args:
+            timeout - time in seconds before readoff proceeds automatically without
+              waiting for SRAM_READY flag
+
+        Returns:
+            error string
+        """
+        logging.info(self.loginfo + "waitForSRAM, timeout = " + str(timeout))
+        waiting = True
+        starttime = time.time()
+        err = ""
+        while waiting:
+            err, status = self.ca.getSubregister("SRAM_READY")
+            if err:
+                err = self.logerr + "error in register read: " + err + " (waitForSRAM)"
+                logging.error(err)
+            if int(status):
+                waiting = False
+                logging.info(self.loginfo + "SRAM ready")
+            if self.ca.abort:
+                waiting = False
+                logging.info(self.loginfo + "readoff aborted by user")
+                self.ca.abort = False
+            if timeout and time.time() - starttime > timeout:
+                err += self.logerr + "SRAM timeout; proceeding with download attempt"
+                logging.error(err)
+                return err
+            # Slow down for debugging (avoid thousands of messages)
+            if self.ca.verbose >= 5:
+                time.sleep(0.5)
+        return err
+
+    def getTimer(self):
+        """
+        Read value of on-board timer
+
+        Returns:
+            timer value as integer
+        """
+        logging.info(self.loginfo + "getTimer")
+        err, rval = self.ca.getRegister("TIMER_VALUE")
+        if err:
+            logging.error(
+                self.logerr + "unable to retrieve timer information (getTimer), "
+                'returning "0" '
+            )
+            return 0
+        return int(rval, 16)
+
+    def resetTimer(self):
+        """
+        Reset on-board timer
+
+        Returns:
+            tuple (error string, response string from register set)
+        """
+        logging.info(self.loginfo + "resetTimer")
+        control_messages = [("RESET_TIMER", "1"), ("RESET_TIMER", "0")]
+        return self.ca.submitMessages(control_messages, " resetTimer: ")
+
+    def enableLED(self, status):
+        """
+        Enable/Disable LED on Nova_v1 board
+
+        Returns:
+            tuple: dummy of (error string, response string from setSubregister())
+        """
+        del status
+        return "", "0"
+
+    def setLED(self, LED, status):
+        """
+        Dummy function; feature is not implemented on Nova_v1 board
+
+        Returns:
+            tuple: dummy of (error string, response string from setSubregister())
+        """
+        del LED, status
+        return "", "0"
+
+    def setPowerSave(self, status):
+        """
+        Select powersave option
+
+        Args:
+            status: setting for powersave option (1 is enabled)
+
+        Returns:
+            tuple (error string, response string from setSubregister())
+        """
+        if status:
+            status = 1
+        return self.ca.setSubregister("POWERSAVE", str(status))
+
+    def setPPER(self, pollperiod):
+        """
+        Set polling period for housekeeping ADCs.
+        Args:
+            pollperiod: tick count (1 tick = 20 ms), range 1-255; default 50 (1 second)
+
+        Returns:
+            tuple (error string, response string from setSubregister() OR invalid time
+              setting string)
+        """
+        if pollperiod is None:
+            pollperiod = 50
+        if not isinstance(pollperiod, int) or pollperiod < 1 or pollperiod > 255:
+            err = (
+                self.logerr + "invalid poll period submitted. Setting remains "
+                "unchanged. "
+            )
+            logging.error(err)
+            return err, str(pollperiod)
+        else:
+            binset = bin(pollperiod)[2:].zfill(8)
+            return self.ca.setSubregister("PPER", binset)
+
+    def getTemp(self, scale=None):
+        """
+        Read temperature sensor
+        Args:
+            scale: temperature scale to report (defaults to C, options are F and K)
+
+        Returns:
+            temperature as float on given scale
+        """
+        err, rval = self.ca.getMonV("MON_TEMP", errflag=True)
+        if err:
+            logging.error(
+                self.logerr + "unable to retrieve temperature information ("
+                'getTemp), returning "0" '
+            )
+            return 0.0
+        ctemp = rval * 1000 - 273.15
+        if scale == "K":
+            temp = ctemp + 273.15
+        elif scale == "F":
+            temp = 1.8 * ctemp + 32
+        else:
+            temp = ctemp
+        return temp
+
+
+    def clearStatus(self):
+        """
+        Check status registers to clear them
+
+        Returns:
+            error string
+        """
+        err1, rval = self.ca.getRegister("STAT_REG_SRC")
+        err2, rval = self.ca.getRegister("STAT_REG2_SRC")
+        err = err1 + err2
+        if err:
+            logging.error(self.logerr + "clearStatus failed")
+        return err
+
+    def checkStatus(self):
+        """
+        Check status register, convert to reverse-order bit stream (i.e., bit 0 is
+          statusbits[0])
+
+        Returns:
+            bit string (no '0b') in reversed order
+        """
+        err, rval = self.ca.getRegister("STAT_REG")
+        rvalbits = bin(int(rval, 16))[2:].zfill(32)
+        statusbits = rvalbits[::-1]
+        return statusbits
+
+    def checkStatus2(self):
+        """
+        Check second status register, convert to reverse-order bit stream (i.e., bit 0
+          is statusbits[0])
+
+        Returns: bit string (no '0b') in reversed order
+        """
+        err, rval = self.ca.getRegister("STAT_REG2")
+        rvalbits = bin(int(rval, 16))[2:].zfill(6)
+        statusbits = rvalbits[::-1]
+        return statusbits
+
+    def reportStatus(self):
+        """
+        Check contents of status register and print/log relevant messages.
+
+        Nova_v1 does not implement the legacy pressure sensor readout used on
+        earlier LLNL boards, so pressure reporting is intentionally omitted.
+        """
+        statusbits = self.checkStatus()
+        statusbits2 = self.checkStatus2()
+
+        logging.info(self.loginfo + "Status report:")
+
+        if int(statusbits[0]):
+            print(self.loginfo + "Sensor read complete")
+        if int(statusbits[1]):
+            print(self.loginfo + "Coarse trigger detected")
+        if int(statusbits[2]):
+            print(self.loginfo + "Fine trigger detected")
+        if int(statusbits[5]):
+            print(self.loginfo + "Sensor readout in progress")
+        if int(statusbits[6]):
+            print(self.loginfo + "Sensor readout complete")
+        if int(statusbits[7]):
+            print(self.loginfo + "SRAM readout started")
+        if int(statusbits[8]):
+            print(self.loginfo + "SRAM readout complete")
+        if int(statusbits[9]):
+            print(self.loginfo + "High-speed timing configuration started")
+        if int(statusbits[10]):
+            print(self.loginfo + "All ADCs configured")
+        if int(statusbits[11]):
+            print(self.loginfo + "All DACs configured")
+        if int(statusbits[13]):
+            print(self.loginfo + "Timer has reset")
+        if int(statusbits[14]):
+            print(self.loginfo + "Camera is Armed")
+        if int(statusbits[16]):
+            print(self.loginfo + "High-speed timing configuration complete")
+
+        self.ca.sensor.reportStatusSensor(statusbits, statusbits2)
+
+        # Legacy status-register temperature field.
+        # Kept for compatibility with workflows that poll only the status bits.
+        # For Nova, housekeeping temperature should normally be read through
+        # MON_TEMP / MON_TSENSE_OUT instead.
+        temp_c = int(statusbits[23:16:-1], 2) * 3.3 * 1000 / 4096
+        logging.info(
+            self.loginfo
+            + "Status temperature field: "
+            + "{0:1.2f}".format(temp_c)
+            + " C"
+        )
+
+        # Nova PDBias monitor.
+        # VDivider scale factor is 101:1, so board-level PDBias voltage is
+        # 101 * monitored ADC voltage.
+        try:
+            pdbias_v = 101.0 * self.ca.getMonV("PDBIAS_MONITOR")
+            logging.info(
+                self.loginfo
+                + "PDBias voltage: "
+                + "{0:1.3f}".format(pdbias_v)
+                + " V"
+            )
+        except Exception as exc:
+            logging.warning(
+                self.logwarn
+                + "Unable to read PDBias voltage: "
+                + repr(exc)
+            )
+
+        if int(statusbits2[0]):
+            print(self.loginfo + "FPA_IF_TO")
+
+        if int(statusbits2[0]):
+            print(self.loginfo + "FPA_IF_TO")
+        if int(statusbits2[1]):
+            print(self.loginfo + "SRAM_RO_TO")
+        if int(statusbits2[2]):
+            print(self.loginfo + "PixelRd Timeout Error")
+        if int(statusbits2[3]):
+            print(self.loginfo + "UART_TX_TO_RST")
+        if int(statusbits2[4]):
+            print(self.loginfo + "UART_RX_TO_RST")
+        if len(statusbits2) > 5 and int(statusbits2[5]):
+            print(self.loginfo + "PDBIAS Unready")
+
+    def reportEdgeDetects(self):
+        """
+        Report edge detects
+        """
+        err, rval = self.ca.getRegister("STAT_EDGE_DETECTS")
+        # shift to left to fake missing edge detect
+        edgebits = bin(int(rval, 16) << 1)[2:].zfill(32)
+        # reverse to get order matching assignment
+        bitsrev = edgebits[::-1]
+        detdict = {}
+        bitidx = 0
+        for frame in range(4):
+            for vert in ("TOP", "BOT"):
+                for edge in range(1, 3):
+                    for hor in ("A", "B"):
+                        detname = (
+                            "W"
+                            + str(frame)
+                            + "_"
+                            + vert
+                            + "_"
+                            + hor
+                            + "_EDGE"
+                            + str(edge)
+                        )
+                        detdict[detname] = bitsrev[bitidx]
+                        bitidx += 1
+        # remove faked detect
+        del detdict["W0_TOP_A_EDGE1"]
+        logging.info(self.loginfo + "Edge detect report:")
+        for key, val in detdict.items():
+            logging.info(self.loginfo + key + ": " + val)
+
+    def dumpStatus(self):
+        """
+        Create dictionary of status values, DAC settings, monitor values, and register
+          values.
+
+        Returns:
+            dictionary of system diagnostic values
+        """
+        statusbits = self.checkStatus()
+        statusbits2 = self.checkStatus2()
+
+        temp = int(statusbits[23:16:-1], 2) * 3.3 * 1000 / 4096
+        press = int(statusbits[:23:-1], 2) * 3.3 * 1000 / 4096
+
+        statDict = OrderedDict(
+            {
+                "Temperature sensor reading (Deg C)": "{0:1.2f}".format(temp),
+                "Sensor read complete": str(statusbits[0]),
+                "Coarse trigger detected": str(statusbits[1]),
+                "Fine trigger detected": str(statusbits[2]),
+                "Sensor readout in progress": str(statusbits[5]),
+                "Sensor readout complete": str(statusbits[6]),
+                "SRAM readout started": str(statusbits[7]),
+                "SRAM readout complete": str(statusbits[8]),
+                "High-speed timing configured": str(statusbits[9]),
+                "All ADCs configured": str(statusbits[10]),
+                "All DACs configured": str(statusbits[11]),
+                "Timer has reset": str(statusbits[13]),
+                "Camera is Armed": str(statusbits[14]),
+                "FPA_IF_TO": str(statusbits2[0]),
+                "SRAM_RO_TO": str(statusbits2[1]),
+                "PixelRd Timeout Error": str(statusbits2[2]),
+                "UART_TX_TO_RST": str(statusbits2[3]),
+                "UART_RX_TO_RST": str(statusbits2[4]),
+                "PDBIAS Unready": str(statusbits2[5]),
+            }
+        )
+
+        if hasattr(self, "getPressure"):
+            try:
+                statDict["Pressure reading (Torr)"] = str(round(self.ca.getPressure(), 3))
+                statDict["Pressure sensor reading (mV)"] = "{0:1.2f}".format(press)
+            except Exception as exc:
+                statDict["Pressure reading (Torr)"] = "Unavailable"
+                statDict["Pressure sensor reading (mV)"] = "Unavailable"
+                logging.warning(
+                    self.logwarn + "dumpStatus: pressure read unavailable: " + repr(exc)
+                )
+
+        if self.ca.sensorname == "icarus" or self.ca.sensorname == "icarus2":
+            senslabs = {
+                3: "W3_Top_A_Edge1 detected",
+                4: "W3_Top_B_Edge1 detected",
+                12: "HST_All_W_En detected",
+            }
+        else:
+            senslabs = {
+                3: "RSLROWOUTA",
+                4: "RSLROWOUTB",
+                12: "RSLNALLWENB",
+                15: "RSLNALLWENA",
+                16: "Config HST is done",
+            }
+        sensDict = {senslabs[x]: str(statusbits[x]) for x in senslabs.keys()}
+
+        DACDict = OrderedDict()
+        MonDict = OrderedDict()
+        for entry in self.subreg_aliases:
+            if self.subreg_aliases[entry][0] == "D":
+                val = str(round(self.ca.getPotV(entry), 3))
+                DACDict["DAC_" + entry] = val
+            else:
+                val = str(round(self.ca.getMonV(entry), 3))
+                MonDict[entry] = val
+
+        regDict = OrderedDict()
+        for key in self.registers.keys():
+            # Load in all registers except for the read-clear status registers.
+            if key == "STAT_REG_SRC" or key == "STAT_REG2_SRC":
+                pass
+            else:
+                err, rval = self.ca.getRegister(key)
+                regDict[key] = rval
+
+        dumpDict = OrderedDict()
+        for x in [statDict, sensDict, MonDict, DACDict, regDict]:
+            dumpDict.update(x)
+        return dumpDict
