@@ -344,9 +344,9 @@ class nova_v1:
         dac_defaults = OrderedDict(
             {
                 "DACA": 0.0,   # DAC_A_HST_A_PDELAY
-                "DACB": 3.3,   # DAC_B_HST_A_NDELAY
+                "DACB": 3.6,   # DAC_B_HST_A_NDELAY
                 "DACC": 0.0,   # DAC_C_HST_B_PDELAY
-                "DACD": 3.3,   # DAC_D_HST_B_NDELAY
+                "DACD": 3.6,   # DAC_D_HST_B_NDELAY
                 "DACE": 2.43,  # DAC_E_HST_RO_IBIAS
                 "DACF": 1.0,   # DAC_F_OSC_RELAX_VREF
                 "DACG": 0.5,   # DAC_G_VAB
