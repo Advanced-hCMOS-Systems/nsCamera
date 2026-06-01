@@ -347,10 +347,10 @@ class nova_v1:
                 "DACB": 3.6,   # DAC_B_HST_A_NDELAY
                 "DACC": 0.0,   # DAC_C_HST_B_PDELAY
                 "DACD": 3.6,   # DAC_D_HST_B_NDELAY
-                "DACE": 2.43,  # DAC_E_HST_RO_IBIAS
+                "DACE": 1.8,  # DAC_E_HST_RO_IBIAS
                 "DACF": 1.0,   # DAC_F_OSC_RELAX_VREF
                 "DACG": 0.5,   # DAC_G_VAB
-                "DACH": 0.3,   # DAC_H_VRST
+                "DACH": 0.25,   # DAC_H_VRST
             }
         )
 
@@ -447,16 +447,11 @@ class nova_v1:
             # just in case ADC_RESET was set on any of the ADCs (pull all ADCs out of
             #   reset)
             ("ADC_RESET", "00000000"),
-            # workaround for uncertain behavior after previous readoff
-            ("ADC1_CONFIG_DATA", "FFFFFFFF"),
-            ("ADC2_CONFIG_DATA", "FFFFFFFF"),
-            ("ADC3_CONFIG_DATA", "FFFFFFFF"),
-            ("ADC4_CONFIG_DATA", "FFFFFFFF"),
-            ("ADC_CTL", "FFFFFFFF"),
             ("ADC1_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
             ("ADC2_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
             ("ADC3_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
             ("ADC4_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
+            ("ADC_CTL", "0000000F"),
         ]
         return self.ca.submitMessages(control_messages, " configADCs: ")
 
@@ -520,7 +515,7 @@ class nova_v1:
             ]
 
         control_messages = [
-            ("ADC_CTL", "0000000F"),  # configure all ADCs
+            #("ADC_CTL", "0000000F"),  # configure all ADCs
             (timingReg, "1"),
         ]
 

@@ -621,11 +621,11 @@ class sensorBase(object):
         The timing list is flattened before processing; the suggested tuple structure is
           just for clarity (first tuple is A, second is B) and is optional.
 
-        The actual timing is rounded down to the nearest multiple of 25 ns. (Each
-          count = 25 ns. e.g., a request for 140 ns rounds down to a count of '5',
-          which corresponds to 125 ns))
-            - Minimum timing is 75 ns
-            - Maximum is 25 * 2^30 ns (approximately 27 seconds)
+        The actual timing is rounded down to the nearest multiple of 12.5 ns. (Each
+          count = 12.5 ns. e.g., a request for 140 ns rounds down to a count of '11',
+          which corresponds to 137.5 ns))
+            - Minimum timing is 37.5 ns
+            - Maximum is 12.5 * 2^30 ns (approximately 13 seconds)
 
         Args:
             timing: 7- or 14-element list (substructure optional) in nanoseconds
@@ -650,14 +650,15 @@ class sensorBase(object):
         if (
             len(flattened) != 14
             or not all(isinstance(x, numbers.Real) for x in flattened)
-            or not all(x >= 75 for x in flattened)
-            or not all(x <= 26843545600 for x in flattened)
+            or not all(x >= 37.5 for x in flattened)
+            or not all(x <= 13421772800 for x in flattened)
         ):
             err = self.logerr + "Invalid manual shutter timing list: " + str(timing)
             logging.error(err + "; timing settings unchanged")
             return err, "00000000"
 
-        timecounts = [int(a // 25) for a in flattened]
+        self.ca.setTiming("AB", (0, 0), 0)
+        timecounts = [int(a // 12.5) for a in flattened]
         self.ca.sensmanual = timing
         self.ca.senstiming = {}  # clear HST settings from ca object
 
@@ -700,7 +701,7 @@ class sensorBase(object):
             "W3_INTEGRATION",
         ]:
             _, reghex = self.ca.getRegister(reg)
-            aside.append(25 * int(reghex, 16))
+            aside.append(12.5 * int(reghex, 16))
         for reg in [
             "W0_INTEGRATION_B",
             "W0_INTERFRAME_B",
@@ -711,7 +712,7 @@ class sensorBase(object):
             "W3_INTEGRATION_B",
         ]:
             _, reghex = self.ca.getRegister(reg)
-            bside.append(25 * int(reghex, 16))
+            bside.append(12.5 * int(reghex, 16))
         return [aside, bside]
 
     def getSensTemp(self, scale=None, offset=None, slope=None, dec=None):
