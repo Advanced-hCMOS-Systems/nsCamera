@@ -20,7 +20,7 @@ be made under this license.
 
 Author: Jeremy Martin Hill (jerhill@llnl.gov)
 
-Version: 2.1.2 (February 2025)
+Version: 2.1.4 (June 2026)
 
 https://doi.org/10.11578/dc.20220803.2
 
@@ -33,6 +33,12 @@ This python package contains a set of routines, protocols, and tools needed to b
 Our goal is to simplify the development of end-user applications for nanosecond gated CMOS cameras. Hardware abstraction enables the end user to write custom software for their own applications without detailed knowledge of the inner workings of each the boards and sensors that they may wish to deploy.
 
 This package supports the LLNLv1 and LLNLv4 boards; for the Sandia RevC board, please use nsCamera version 1.3.
+
+# What's new in 2.1.4
+
+### Nova camera board support
+- Added Nova v1 board class
+- Updated Nova v1 DAC defaults, ADC init sequence, and timing resolution
 
 # What's new in 2.1.2
 
@@ -57,7 +63,7 @@ This package supports the LLNLv1 and LLNLv4 boards; for the Sandia RevC board, p
 - 'logfile' - divert console output to a file (e.g., *logfile="console.txt"*)
 
 ### New 'wheel' option for installation
-- Install package using *pip install nsCamera nsCamera-2.1.2-py2.py3-none-any.whl*
+- Install package using *pip install nsCamera nsCamera-2.1.4-py2.py3-none-any.whl*
 
 ### New dumpStatus() method
 - Creates dictionary from current status flags and register contents
@@ -137,7 +143,7 @@ _Dependencies_: joblib, matplotlib, numpy, Pillow, pyserial, setuptools
 1. Open an Anaconda command line window and activate the relevant python environment, e.g, `conda activate my_nsc_env` (or continue in the same window if you just created a python environment)
 1. install the wheel file (usually located in the *dist* directory), e.g., 
 	
-	`pip install nsCamera-2.1.2-py2.py3-none-any.whl`
+	`pip install nsCamera-2.1.4-py2.py3-none-any.whl`
 	
 1. ALTERNATE INSTALL METHOD
 	1. Download and decompress the install package *nsCamera-X.Y.zip* or *nsCamera-X.Y.tar.gz* available from the release link on the nsCamera GitHub page
@@ -252,7 +258,7 @@ NOTE: if nsCamera is not installed in the default conda environment, you may nee
 
 Running Jupyter with `jupyter notebook` starts a web server interface to the python interpreter. If a web page does not automatically open in your browser, open this url in your browser: http://127.0.0.1:8888
 
-If a copy of this file is not obviously available (e.g., you no longer have your nsCamera download conveniently at hand), it can be found in the python distribution, with a path something like *C:\Users\username\Applications\anaconda3\Lib\site-packages\nsCamera-2.1.2-py3.12.egg\nsCamera\docs* for a base Anaconda distribution, or *C:\Users\hill35\Applications\anaconda3\envs\my_nsc_env\Lib\site-packages\nsCamera-2.1.2-py3.12.egg\nsCamera\docs** for an installation in the 'my_nsc_env' environment.
+If a copy of this file is not obviously available (e.g., you no longer have your nsCamera download conveniently at hand), it can be found in the python distribution, with a path something like *C:\Users\username\Applications\anaconda3\Lib\site-packages\nsCamera-2.1.4-py3.12.egg\nsCamera\docs* for a base Anaconda distribution, or *C:\Users\hill35\Applications\anaconda3\envs\my_nsc_env\Lib\site-packages\nsCamera-2.1.4-py3.12.egg\nsCamera\docs** for an installation in the 'my_nsc_env' environment.
 
 This script will generate output files, so we recommend copying the file to a user directory (e.g., Desktop or Documents) before running it. Navigate to this new copy of the file using the Jupyter web page browser window and follow the instructions.
 
