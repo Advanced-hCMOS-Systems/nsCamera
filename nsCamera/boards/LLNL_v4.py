@@ -310,14 +310,18 @@ class llnl_v4:
             )
             setattr(self, s[0].upper(), sr)
 
-        # set voltage ranges for all DACs - WARNING: actual output voltage limited to
-        #   external supply (3.3 V)
-        # setpot('potx', n) will generate 3.3 V for all n > .66
+        # set voltage ranges for all DACs
+        # DACE output passes through a regulator that restricts the range to 0.7–2.45 V
+        # all other DAC outputs are limited to 3.3 V by the external supply rail
         for n in range(0, 8):
             potname = "DAC" + string.ascii_uppercase[n]
             potobj = getattr(self, potname)
-            potobj.minV = 0
-            potobj.maxV = 5  #
+            if potname == "DACE":
+                potobj.minV = 0.7
+                potobj.maxV = 2.45
+            else:
+                potobj.minV = 0
+                potobj.maxV = 3.3
             potobj.resolution = (
                 1.0 * potobj.maxV - potobj.minV
             ) / potobj.max_value  # 76 uV / LSB
@@ -401,7 +405,9 @@ class llnl_v4:
 
     def configADCs(self):
         """
-        Sets default ADC configuration (does not latch settings)
+        Configure and latch ADC settings. Called during initBoard and again at
+        the start of each arm() cycle to work around uncertain ADC state after
+        a previous readoff.
 
         Returns:
             tuple (error string, response string) from final control message
@@ -422,6 +428,7 @@ class llnl_v4:
             ("ADC2_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
             ("ADC3_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
             ("ADC4_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
+            ("ADC_CTL", "0000000F"),           # latch config for all ADCs
         ]
         return self.ca.submitMessages(control_messages, " configADCs: ")
 
@@ -485,7 +492,6 @@ class llnl_v4:
             ]
 
         control_messages = [
-            ("ADC_CTL", "0000000F"),  # configure all ADCs
             (timingReg, "1"),
         ]
 

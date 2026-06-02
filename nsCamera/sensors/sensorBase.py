@@ -624,7 +624,7 @@ class sensorBase(object):
         The actual timing is rounded down to the nearest multiple of 12.5 ns. (Each
           count = 12.5 ns. e.g., a request for 140 ns rounds down to a count of '11',
           which corresponds to 137.5 ns))
-            - Minimum timing is 37.5 ns
+            - Minimum timing is 25 ns
             - Maximum is 12.5 * 2^30 ns (approximately 13 seconds)
 
         Args:
@@ -650,7 +650,7 @@ class sensorBase(object):
         if (
             len(flattened) != 14
             or not all(isinstance(x, numbers.Real) for x in flattened)
-            or not all(x >= 37.5 for x in flattened)
+            or not all(x >= 25.0 for x in flattened)
             or not all(x <= 13421772800 for x in flattened)
         ):
             err = self.logerr + "Invalid manual shutter timing list: " + str(timing)

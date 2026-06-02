@@ -20,6 +20,7 @@ Version: 2.1.4 (May 2026) - Nova Added, colorized and improved messaging
 import argparse
 import json
 import logging
+import sys
 import time
 from collections import OrderedDict
 
@@ -35,9 +36,32 @@ When run from the command line, testSuite accepts the following parameters:
     -p      specified port number; default=None
     -i      specified ip address; default=None
     -v      verbosity level; default=4
-    --batch run automatically without interaction
-    --hw    wait for hardware triggering
+    --batch    run automatically without interaction
+    --hw       wait for hardware triggering
+    --no-color disable ANSI colorized terminal output
+    --log FILE mirror all console output (with color codes) to FILE
 """
+
+
+class Tee:
+    """Mirror stdout to a file, preserving ANSI color codes in both."""
+
+    def __init__(self, filepath):
+        self._stdout = sys.stdout
+        self._file = open(filepath, "w", encoding="utf-8")
+        sys.stdout = self
+
+    def write(self, data):
+        self._stdout.write(data)
+        self._file.write(data)
+
+    def flush(self):
+        self._stdout.flush()
+        self._file.flush()
+
+    def close(self):
+        sys.stdout = self._stdout
+        self._file.close()
 
 
 USE_COLOR = True
@@ -765,20 +789,60 @@ def icarusManual(caObject):
     time.sleep(1)
     print_info("\n-Testing manual shutter acquisition-")
 
+    statusVerify(
+        caObject,
+        [
+            (
+                "STAT_HSTCONFIGDONE",
+                1,
+                "High-speed timing config should be done before arming.",
+            ),
+            (
+                "MANSHUT_MODE",
+                1,
+                "Manual shutter mode should be enabled after setManualShutters().",
+            ),
+        ],
+        context="pre-arm manual shutter setup",
+    )
+
     if caObject.swtrigger:
         print_info("Using software trigger")
+        armBoard(caObject)
         statusVerify(
             caObject,
             [
-                ("STAT_ADCSCONFIGURED", 1),
-                (caObject.potsdacsconfigured, 1),
-                ("STAT_HSTCONFIGDONE", 1),
-                ("MANSHUT_MODE", 1),
+                (
+                    "STAT_ADCSCONFIGURED",
+                    1,
+                    "ADC configuration should be complete after arming.",
+                ),
+                (
+                    caObject.potsdacsconfigured,
+                    1,
+                    "DAC/pot configuration should be complete after arming.",
+                ),
             ],
+            context="post-arm manual shutter status",
         )
-        armBoard(caObject)
     else:
         caObject.arm()
+        statusVerify(
+            caObject,
+            [
+                (
+                    "STAT_ADCSCONFIGURED",
+                    1,
+                    "ADC configuration should be complete after arming.",
+                ),
+                (
+                    caObject.potsdacsconfigured,
+                    1,
+                    "DAC/pot configuration should be complete after arming.",
+                ),
+            ],
+            context="post-arm manual shutter status",
+        )
         if caObject.interactive:
             getEnter(
                 "> Please initiate hardware trigger, then press ENTER to "
@@ -799,8 +863,8 @@ def icarusManual(caObject):
     if "Reinitialization" in caObject.tests and caObject.interactive:
         caObject.setManualShutters(
             timing=[
-                (25, 50, 75, 100, 125, 150, 175),
-                (175, 150, 125, 100, 75, 50, 25),
+                (50, 100, 150, 200, 250, 300, 350),
+                (350, 300, 250, 200, 150, 100, 50),
             ]
         )
 
@@ -821,8 +885,8 @@ def icarusManual(caObject):
         statusVerify(caObject, [("STAT_TIMERCOUNTERRESET", 1)])
 
         if caObject.sensor.getManualTiming() != [
-            [25, 50, 75, 100, 125, 150, 175],
-            [175, 150, 125, 100, 75, 50, 25],
+            [50, 100, 150, 200, 250, 300, 350],
+            [350, 300, 250, 200, 150, 100, 50],
         ]:
             print_fail("+Manual timing WAS NOT restored properly after reinitialization")
         else:
@@ -1077,8 +1141,20 @@ def test_v4(caObject):
             print("Testing " + dacname)
             temperr = 0
 
-            for j in range(7):
-                desired = j * 0.5
+            potobj = getattr(caObject.board, dacname)
+            # DACE has a regulator that restricts its usable range
+            if dacname == "DACE":
+                sweep_min, sweep_max = 0.7, 2.2
+            else:
+                # cap at 3.3 V supply rail regardless of potobj.maxV
+                sweep_min, sweep_max = potobj.minV, min(potobj.maxV, 3.3)
+            test_voltages = sorted(set(
+                [sweep_min] +
+                [round(k * 0.5, 1) for k in range(int(sweep_max / 0.5) + 1)
+                 if sweep_min <= round(k * 0.5, 1) <= sweep_max]
+            ))
+
+            for desired in test_voltages:
                 minvolt = 0.01
 
                 caObject.setPotV(dacname, desired, tune=True)
@@ -1397,22 +1473,36 @@ if __name__ == "__main__":
         action="store_true",
         help="disable ANSI colorized terminal output",
     )
+    parser.add_argument(
+        "--log",
+        action="store",
+        dest="logfile",
+        default=None,
+        metavar="FILE",
+        help="mirror all console output (with color codes) to FILE",
+    )
 
     args = parser.parse_args()
 
     if args.no_color:
         USE_COLOR = False
 
-    testSuite(
-        interactive=not args.batch,
-        swtrigger=not args.hw,
-        board=args.board,
-        comm=args.comm,
-        sensor=args.sensor,
-        portNum=args.portNum,
-        ipAdd=args.ipAdd,
-        verbose=args.verbose,
-    )
+    tee = Tee(args.logfile) if args.logfile else None
+
+    try:
+        testSuite(
+            interactive=not args.batch,
+            swtrigger=not args.hw,
+            board=args.board,
+            comm=args.comm,
+            sensor=args.sensor,
+            portNum=args.portNum,
+            ipAdd=args.ipAdd,
+            verbose=args.verbose,
+        )
+    finally:
+        if tee:
+            tee.close()
 
 """
 Copyright (c) 2025, Lawrence Livermore National Security, LLC.  All rights reserved.

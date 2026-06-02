@@ -236,6 +236,7 @@ class GigE:
             logging.info(self.loginfo + "arm")
         logging.debug(self.logdebug + "arming mode: " + str(mode))
         self.ca.clearStatus()
+        self.ca.configADCs()
         self.ca.latchPots()
         err, resp = self.ca.startCapture(mode)
         if err:
