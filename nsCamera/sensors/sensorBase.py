@@ -13,7 +13,7 @@ and Lawrence Livermore National Security, LLC (LLNS) for the operation of LLNL.
 'nsCamera' is distributed under the terms of the MIT license. All new contributions must
 be made under this license.
 
-Version: 2.1.2 (February 2025)
+Version: 2.1.4 (May 2026)
 """
 import itertools
 import logging
@@ -30,9 +30,6 @@ class sensorBase(object):
 
     def __init__(self, camassem):
         self.ca = camassem
-        # skip board settings if no board object exists
-        if hasattr(self.ca, "board"):
-            self.init_board_specific()
 
         (
             self.logcrit,
@@ -41,6 +38,26 @@ class sensorBase(object):
             self.loginfo,
             self.logdebug,
         ) = makeLogLabels(self.ca.logtag, self.loglabel)
+
+        # skip board settings if no board object exists
+        if hasattr(self.ca, "board"):
+            if not self.check_board_sensor_compatibility():
+                raise ValueError(
+                    "Incompatible board/sensor selection: board='{}', sensor='{}'".format(
+                        getattr(self.ca, "boardname", None),
+                        getattr(self.ca, "sensorname", None),
+                    )
+                )
+
+            self.init_board_specific()
+
+        # skip assignment if no comms object exists
+        if hasattr(self.ca, "comms"):
+            self.ca.comms.payloadsize = (
+                self.width * self.height * self.nframes * self.bytesperpixel
+            )
+
+        logging.info(self.loginfo + "Initializing sensor object")
 
         # skip assignment if no comms object exists
         if hasattr(self.ca, "comms"):
@@ -53,13 +70,69 @@ class sensorBase(object):
     def init_board_specific(self):
         """Initialize aliases and subregisters specific to the current board and sensor."""
 
-        if self.ca.sensorname == "icarus" or self.ca.sensorname == "icarus2":
+        sensorname = getattr(self.ca, "sensorname", "").lower()
+
+        if sensorname in {"icarus", "icarus2", "hyperion"}:
             self.ca.board.subreg_aliases = self.ca.board.icarus_subreg_aliases
             self.ca.board.monitor_controls = self.ca.board.icarus_monitor_controls
-        else:
+        elif sensorname == "daedalus":
             self.ca.board.subreg_aliases = self.ca.board.daedalus_subreg_aliases
             self.ca.board.monitor_controls = self.ca.board.daedalus_monitor_controls
+        else:
+            err = (
+                self.logerr
+                + "No board-specific alias mapping defined for sensor '"
+                + str(sensorname)
+                + "'."
+            )
+            logging.error(err)
+            raise ValueError(err)
+            
+    def check_board_sensor_compatibility(self):
+        """
+        Check whether the selected board supports the selected sensor.
 
+        Returns:
+            bool: True if compatible, False otherwise.
+        """
+        boardname = getattr(self.ca, "boardname", "").lower()
+        sensorname = getattr(self.ca, "sensorname", "").lower()
+
+        board_sensor_compatibility = {
+            "nova": {"icarus2", "hyperion"},
+            "nova_v1": {"icarus2", "hyperion"},
+        }
+
+        # Only enforce compatibility for boards explicitly listed above.
+        if boardname not in board_sensor_compatibility:
+            return True
+
+        allowed_sensors = board_sensor_compatibility[boardname]
+
+        if sensorname not in allowed_sensors:
+            err = (
+                self.logerr
+                + "Sensor/board compatibility error: board '"
+                + str(boardname)
+                + "' is only compatible with sensors "
+                + str(sorted(allowed_sensors))
+                + ", but selected sensor is '"
+                + str(sensorname)
+                + "'."
+            )
+            logging.error(err)
+            return False
+
+        logging.info(
+            self.loginfo
+            + "Sensor/board compatibility confirmed: board '"
+            + str(boardname)
+            + "' with sensor '"
+            + str(sensorname)
+            + "'."
+        )
+        return True
+        
     # TODO: Check if 'jumpers' still apply for newer boards
     def checkSensorVoltStat(self):
         """
@@ -548,11 +621,11 @@ class sensorBase(object):
         The timing list is flattened before processing; the suggested tuple structure is
           just for clarity (first tuple is A, second is B) and is optional.
 
-        The actual timing is rounded down to the nearest multiple of 25 ns. (Each
-          count = 25 ns. e.g., a request for 140 ns rounds down to a count of '5',
-          which corresponds to 125 ns))
-            - Minimum timing is 75 ns
-            - Maximum is 25 * 2^30 ns (approximately 27 seconds)
+        The actual timing is rounded down to the nearest multiple of 12.5 ns. (Each
+          count = 12.5 ns. e.g., a request for 140 ns rounds down to a count of '11',
+          which corresponds to 137.5 ns))
+            - Minimum timing is 25 ns
+            - Maximum is 12.5 * 2^30 ns (approximately 13 seconds)
 
         Args:
             timing: 7- or 14-element list (substructure optional) in nanoseconds
@@ -577,14 +650,15 @@ class sensorBase(object):
         if (
             len(flattened) != 14
             or not all(isinstance(x, numbers.Real) for x in flattened)
-            or not all(x >= 75 for x in flattened)
-            or not all(x <= 26843545600 for x in flattened)
+            or not all(x >= 25.0 for x in flattened)
+            or not all(x <= 13421772800 for x in flattened)
         ):
             err = self.logerr + "Invalid manual shutter timing list: " + str(timing)
             logging.error(err + "; timing settings unchanged")
             return err, "00000000"
 
-        timecounts = [int(a // 25) for a in flattened]
+        self.ca.setTiming("AB", (0, 0), 0)
+        timecounts = [int(a // 12.5) for a in flattened]
         self.ca.sensmanual = timing
         self.ca.senstiming = {}  # clear HST settings from ca object
 
@@ -627,7 +701,7 @@ class sensorBase(object):
             "W3_INTEGRATION",
         ]:
             _, reghex = self.ca.getRegister(reg)
-            aside.append(25 * int(reghex, 16))
+            aside.append(12.5 * int(reghex, 16))
         for reg in [
             "W0_INTEGRATION_B",
             "W0_INTERFRAME_B",
@@ -638,7 +712,7 @@ class sensorBase(object):
             "W3_INTEGRATION_B",
         ]:
             _, reghex = self.ca.getRegister(reg)
-            bside.append(25 * int(reghex, 16))
+            bside.append(12.5 * int(reghex, 16))
         return [aside, bside]
 
     def getSensTemp(self, scale=None, offset=None, slope=None, dec=None):

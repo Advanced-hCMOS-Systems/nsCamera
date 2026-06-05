@@ -1,20 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-LLNLv4 board definition, including monitors, DACS, and other board-specific settings
+Nova board definition, including monitors, DACS, and other board-specific settings
 
-Author: Jeremy Martin Hill (jerhill@llnl.gov)
-Author: Matthew Dayton (dayton5@llnl.gov)
+Author: Matthew Dayton (matthew@hcmos.com)
 
-Copyright (c) 2025, Lawrence Livermore National Security, LLC.  All rights reserved.
-LLNL-CODE-838080
-
-This work was produced at the Lawrence Livermore National Laboratory (LLNL) under 
-contract no. DE-AC52-07NA27344 (Contract 44) between the U.S. Department of Energy (DOE)
-and Lawrence Livermore National Security, LLC (LLNS) for the operation of LLNL.
-'nsCamera' is distributed under the terms of the MIT license. All new contributions must
-be made under this license.
-
-Version: 2.1.2 (February 2025)
+Version: 1.1.2 (May 2026)
 """
 
 import logging
@@ -26,12 +16,12 @@ from nsCamera.utils.Packet import Packet
 from nsCamera.utils.Subregister import SubRegister
 
 
-class llnl_v4:
+class nova_v1:
     """
-    Livermore LLNL v4.0 board
+    Advanced hCMOS Systems Nova 
 
     Compatible communication protocols: RS422, GigE
-    Compatible sensors: icarus, icarus2, daedalus
+    Compatible sensors: icarus2
     """
 
     # FPGA register map - use '.upper()' on keys to ensure uppercase lookup
@@ -108,7 +98,6 @@ class llnl_v4:
         ("COLQUENCHEN", "CTRL_REG", 2, 1, True),
         ("POWERSAVE", "CTRL_REG", 3, 1, True),
         ("PDBIAS_LOW", "CTRL_REG", 6, 1, True),
-        # ("SWACK", "CTRL_REG", 10, 1, True),
         ("DACA", "DAC_REG_A_AND_B", 31, 16, True),
         ("DACB", "DAC_REG_A_AND_B", 15, 16, True),
         ("DACC", "DAC_REG_C_AND_D", 31, 16, True),
@@ -180,11 +169,11 @@ class llnl_v4:
 
     def __init__(self, camassem):
         self.ca = camassem
-        self.logcrit = self.ca.logcritbase + "[LLNL_v4] "
-        self.logerr = self.ca.logerrbase + "[LLNL_v4] "
-        self.logwarn = self.ca.logwarnbase + "[LLNL_v4] "
-        self.loginfo = self.ca.loginfobase + "[LLNL_v4] "
-        self.logdebug = self.ca.logdebugbase + "[LLNL_v4] "
+        self.logcrit = self.ca.logcritbase + "[Nova_v1] "
+        self.logerr = self.ca.logerrbase + "[Nova_v1] "
+        self.logwarn = self.ca.logwarnbase + "[Nova_v1] "
+        self.loginfo = self.ca.loginfobase + "[Nova_v1] "
+        self.logdebug = self.ca.logdebugbase + "[Nova_v1] "
         logging.info(self.loginfo + "Initializing board object")
         self.VREF = 3.3  # must be supplied externally for ADC128S102
         self.ADC5_mult = 1
@@ -204,63 +193,71 @@ class llnl_v4:
         err, rval = self.ca.sendCMD(fpgaRev_pkt)
         self.ca.FPGAVersion = rval[8:16]
 
-        self.defoff = 34.5  # default pressure sensor offset
-        self.defsens = 92.5  # default pressure sensor sensitivity
-
-        # TODO: move to sensor scripts?
+ 
         # map channels to signal names for abstraction at the camera assembler level;
         #   each requires a corresponding entry in 'subregisters'
         self.icarus_subreg_aliases = OrderedDict(
             {
+                # DAC control aliases
                 "HST_A_PDELAY": "DACA",
                 "HST_A_NDELAY": "DACB",
                 "HST_B_PDELAY": "DACC",
                 "HST_B_NDELAY": "DACD",
                 "HST_RO_IBIAS": "DACE",
                 "HST_RO_NC_IBIAS": "DACE",
-                "HST_OSC_CTL": "DACF",
+                "HST_OSC_RELAX_VREF": "DACF",
+                "OSC_RELAX_VREF": "DACF",
                 "VAB": "DACG",
                 "VRST": "DACH",
-                "MON_PRES_MINUS": "MON_CH1",
-                "MON_PRES_PLUS": "MON_CH2",
+                "RELAX_OSC_CTL": "DACE",   # Table labels MON_CH15 as DAC_E_RELAX_OSC_CTL
+
+                # Monitor aliases
+                "PDBIAS": "MON_CH1",
+                "PDBIAS_MONITOR": "MON_CH1",
+                "MON_TSENSE": "MON_CH3",
                 "MON_TEMP": "MON_CH3",
                 "MON_COL_TOP_IBIAS_IN": "MON_CH4",
-                "MON_HST_OSC_R_BIAS": "MON_CH5",
+                "MON_HST_RO_IBIAS": "MON_CH5",
+                "MON_HST_RO_NC_IBIAS": "MON_CH5",
                 "MON_VAB": "MON_CH6",
-                "MON_HST_RO_IBIAS": "MON_CH7",
-                "MON_HST_RO_NC_IBIAS": "MON_CH7",
+                "DOSIMETER": "MON_CH7",
                 "MON_VRST": "MON_CH8",
                 "MON_COL_BOT_IBIAS_IN": "MON_CH9",
                 "MON_HST_A_PDELAY": "MON_CH10",
                 "MON_HST_B_NDELAY": "MON_CH11",
-                "DOSIMETER": "MON_CH12",
+                "MON_HST_OSC_RELAX_VREF": "MON_CH13",
                 "MON_HST_OSC_VREF_IN": "MON_CH13",
                 "MON_HST_B_PDELAY": "MON_CH14",
+                "MON_RELAX_OSC_CTL": "MON_CH15",
                 "MON_HST_OSC_CTL": "MON_CH15",
                 "MON_HST_A_NDELAY": "MON_CH16",
-                "MON_CHA": "MON_CH10",
-                "MON_CHB": "MON_CH16",
-                "MON_CHC": "MON_CH14",
-                "MON_CHD": "MON_CH11",
-                "MON_CHE": "MON_CH7",
-                "MON_CHF": "MON_CH15",
-                "MON_CHG": "MON_CH6",
-                "MON_CHH": "MON_CH8",
+
+                # Short DAC monitor aliases
+                "MON_CHA": "MON_CH10",  # DAC_A_HST_A_PDELAY
+                "MON_CHB": "MON_CH16",  # DAC_B_HST_A_NDELAY
+                "MON_CHC": "MON_CH14",  # DAC_C_HST_B_PDELAY
+                "MON_CHD": "MON_CH11",  # DAC_D_HST_B_NDELAY
+                "MON_CHE": "MON_CH5",   # DAC_E_HST_RO_IBIAS
+                "MON_CHF": "MON_CH13",  # DAC_F_OSC_RELAX_VREF
+                "MON_CHG": "MON_CH6",   # DAC_G_VAB
+                "MON_CHH": "MON_CH8",   # DAC_H_VRST
             }
         )
+
         # Read-only; identifies controls corresponding to monitors
         self.icarus_monitor_controls = OrderedDict(
             {
-                "MON_CH10": "DACA",
-                "MON_CH16": "DACB",
-                "MON_CH14": "DACC",
-                "MON_CH11": "DACD",
-                "MON_CH7": "DACE",
-                "MON_CH15": "DACF",
-                "MON_CH6": "DACG",
-                "MON_CH8": "DACH",
+                "MON_CH10": "DACA",  # DAC_A_HST_A_PDELAY
+                "MON_CH16": "DACB",  # DAC_B_HST_A_NDELAY
+                "MON_CH14": "DACC",  # DAC_C_HST_B_PDELAY
+                "MON_CH11": "DACD",  # DAC_D_HST_B_NDELAY
+                "MON_CH5": "DACE",   # DAC_E_HST_RO_IBIAS
+                "MON_CH13": "DACF",  # DAC_F_OSC_RELAX_VREF
+                "MON_CH6": "DACG",   # DAC_G_VAB
+                "MON_CH8": "DACH",   # DAC_H_VRST
             }
         )
+        ## Daedalus is not implemented yet for nova, here for future use
         self.daedalus_subreg_aliases = OrderedDict(
             {
                 "HST_OSC_VREF_IN": "DACC",
@@ -310,18 +307,14 @@ class llnl_v4:
             )
             setattr(self, s[0].upper(), sr)
 
-        # set voltage ranges for all DACs
-        # DACE output passes through a regulator that restricts the range to 0.7–2.45 V
-        # all other DAC outputs are limited to 3.3 V by the external supply rail
+        # set voltage ranges for all DACs - WARNING: actual output voltage limited to
+        #   external supply (3.6 V)
+        # setpot('potx', n) will generate 3.3 V for all n > .66
         for n in range(0, 8):
             potname = "DAC" + string.ascii_uppercase[n]
             potobj = getattr(self, potname)
-            if potname == "DACE":
-                potobj.minV = 0.7
-                potobj.maxV = 2.45
-            else:
-                potobj.minV = 0
-                potobj.maxV = 3.3
+            potobj.minV = 0
+            potobj.maxV = 5  #
             potobj.resolution = (
                 1.0 * potobj.maxV - potobj.minV
             ) / potobj.max_value  # 76 uV / LSB
@@ -333,7 +326,7 @@ class llnl_v4:
         Returns:
             tuple (error string, response string) from final control message
         """
-        logging.info(self.loginfo + "initBoard LLNLv4")
+        logging.info(self.loginfo + "initBoard Nova_v1")
         control_messages = []
         self.clearStatus()
         self.configADCs()
@@ -341,13 +334,51 @@ class llnl_v4:
 
     def initPots(self):
         """
-        Dummy function; initial DAC values are set by firmware at startup
+        Initialize Nova_v1 DAC values and latch them into the sensor.
 
         Returns:
-            tuple (empty string, empty string)
+            tuple (error string, response string)
         """
-        logging.debug(self.logdebug + "InitPots")
-        return "", ""
+        logging.info(self.loginfo + "initPots")
+
+        dac_defaults = OrderedDict(
+            {
+                "DACA": 0.0,   # DAC_A_HST_A_PDELAY
+                "DACB": 3.6,   # DAC_B_HST_A_NDELAY
+                "DACC": 0.0,   # DAC_C_HST_B_PDELAY
+                "DACD": 3.6,   # DAC_D_HST_B_NDELAY
+                "DACE": 1.8,  # DAC_E_HST_RO_IBIAS
+                "DACF": 1.0,   # DAC_F_OSC_RELAX_VREF
+                "DACG": 0.5,   # DAC_G_VAB
+                "DACH": 0.25,   # DAC_H_VRST
+            }
+        )
+
+        err = ""
+
+        for dac_name, voltage in dac_defaults.items():
+            logging.info(
+                self.loginfo
+                + "Setting "
+                + dac_name
+                + " to "
+                + "{0:.3f}".format(voltage)
+                + " V"
+            )
+
+            result = self.ca.setPotV(dac_name, voltage)
+            err_i = result[0] if isinstance(result, tuple) else ""
+
+            if err_i:
+                err += err_i
+
+        latch_err, latch_rval = self.latchPots()
+        err += latch_err
+
+        if err:
+            logging.error(self.logerr + "initPots: one or more DAC settings failed")
+
+        return err, latch_rval
 
     def latchPots(self):
         """
@@ -405,9 +436,7 @@ class llnl_v4:
 
     def configADCs(self):
         """
-        Configure and latch ADC settings. Called during initBoard and again at
-        the start of each arm() cycle to work around uncertain ADC state after
-        a previous readoff.
+        Sets default ADC configuration (does not latch settings)
 
         Returns:
             tuple (error string, response string) from final control message
@@ -418,17 +447,11 @@ class llnl_v4:
             # just in case ADC_RESET was set on any of the ADCs (pull all ADCs out of
             #   reset)
             ("ADC_RESET", "00000000"),
-            # workaround for uncertain behavior after previous readoff
-            ("ADC1_CONFIG_DATA", "FFFFFFFF"),
-            ("ADC2_CONFIG_DATA", "FFFFFFFF"),
-            ("ADC3_CONFIG_DATA", "FFFFFFFF"),
-            ("ADC4_CONFIG_DATA", "FFFFFFFF"),
-            ("ADC_CTL", "FFFFFFFF"),
             ("ADC1_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
             ("ADC2_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
             ("ADC3_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
             ("ADC4_CONFIG_DATA", "81A801FF"),  # ext Vref 1.25V
-            ("ADC_CTL", "0000000F"),           # latch config for all ADCs
+            ("ADC_CTL", "0000000F"),
         ]
         return self.ca.submitMessages(control_messages, " configADCs: ")
 
@@ -492,6 +515,7 @@ class llnl_v4:
             ]
 
         control_messages = [
+            #("ADC_CTL", "0000000F"),  # configure all ADCs
             (timingReg, "1"),
         ]
 
@@ -576,7 +600,7 @@ class llnl_v4:
 
     def enableLED(self, status):
         """
-        Dummy function; feature is not implemented on LLNL_V4 board
+        Enable/Disable LED on Nova_v1 board
 
         Returns:
             tuple: dummy of (error string, response string from setSubregister())
@@ -586,7 +610,7 @@ class llnl_v4:
 
     def setLED(self, LED, status):
         """
-        Dummy function; feature is not implemented on LLNL_V4 board
+        Dummy function; feature is not implemented on Nova_v1 board
 
         Returns:
             tuple: dummy of (error string, response string from setSubregister())
@@ -610,9 +634,9 @@ class llnl_v4:
 
     def setPPER(self, pollperiod):
         """
-        Set polling period for ADCs.
+        Set polling period for housekeeping ADCs.
         Args:
-            pollperiod: milliseconds, between 1 and 255; defaults to 50
+            pollperiod: tick count (1 tick = 20 ms), range 1-255; default 50 (1 second)
 
         Returns:
             tuple (error string, response string from setSubregister() OR invalid time
@@ -656,44 +680,6 @@ class llnl_v4:
             temp = ctemp
         return temp
 
-    def getPressure(self, offset=None, sensitivity=None, units=None):
-        """
-        Read pressure sensor. Uses default offset and sensitivity defined in init
-          function unless alternatives are specified. NOTE: to reset defaults, reassign
-          board.defoff and board.defsens explicitly
-
-        Args:
-            offset: non-default offset in mv/V
-            sensitivity: non-default sensitivity in mV/V/span
-            units: units to report pressure (defaults to Torr, options are psi, bar,
-              inHg, atm)
-
-        Returns:
-            Pressure as float in chosen units, defaults to torr
-        """
-        if offset is None:
-            offset = self.defoff
-        if sensitivity is None:
-            sensitivity = self.defsens
-        if units is None:
-            units = "torr"
-        pplus = self.ca.getMonV("MON_PRES_PLUS")
-        pminus = self.ca.getMonV("MON_PRES_MINUS")
-        delta = 1000 * (pplus - pminus)
-        ratio = sensitivity / 30  # nominal is 21/30
-        psi = (delta - offset) / ratio
-        if units.lower() == "psi":
-            press = psi
-        elif units.lower() == "bar":
-            press = psi / 14.504
-        elif units.lower() == "atm":
-            press = psi / 14.695
-        elif units.lower() == "inHg":
-            press = psi * 2.036
-        else:
-            press = 51.715 * psi  # default to Torr
-
-        return press
 
     def clearStatus(self):
         """
@@ -736,12 +722,16 @@ class llnl_v4:
 
     def reportStatus(self):
         """
-        Check contents of status register, print relevant messages
+        Check contents of status register and print/log relevant messages.
+
+        Nova_v1 does not implement the legacy pressure sensor readout used on
+        earlier LLNL boards, so pressure reporting is intentionally omitted.
         """
         statusbits = self.checkStatus()
         statusbits2 = self.checkStatus2()
 
         logging.info(self.loginfo + "Status report:")
+
         if int(statusbits[0]):
             print(self.loginfo + "Sensor read complete")
         if int(statusbits[1]):
@@ -768,18 +758,42 @@ class llnl_v4:
             print(self.loginfo + "Camera is Armed")
         if int(statusbits[16]):
             print(self.loginfo + "High-speed timing configuration complete")
+
         self.ca.sensor.reportStatusSensor(statusbits, statusbits2)
-        temp = int(statusbits[23:16:-1], 2) * 3.3 * 1000 / 4096
-        logging.info(
-            self.loginfo + "Temperature reading: " + "{0:1.2f}".format(temp) + " C"
-        )
-        press = int(statusbits[:23:-1], 2) * 3.3 * 1000 / 4096
+
+        # Legacy status-register temperature field.
+        # Kept for compatibility with workflows that poll only the status bits.
+        # For Nova, housekeeping temperature should normally be read through
+        # MON_TEMP / MON_TSENSE_OUT instead.
+        temp_c = int(statusbits[23:16:-1], 2) * 3.3 * 1000 / 4096
         logging.info(
             self.loginfo
-            + "Pressure sensor reading: "
-            + "{0:1.2f}".format(press)
-            + " mV"
+            + "Status temperature field: "
+            + "{0:1.2f}".format(temp_c)
+            + " C"
         )
+
+        # Nova PDBias monitor.
+        # VDivider scale factor is 101:1, so board-level PDBias voltage is
+        # 101 * monitored ADC voltage.
+        try:
+            pdbias_v = 101.0 * self.ca.getMonV("PDBIAS_MONITOR")
+            logging.info(
+                self.loginfo
+                + "PDBias voltage: "
+                + "{0:1.3f}".format(pdbias_v)
+                + " V"
+            )
+        except Exception as exc:
+            logging.warning(
+                self.logwarn
+                + "Unable to read PDBias voltage: "
+                + repr(exc)
+            )
+
+        if int(statusbits2[0]):
+            print(self.loginfo + "FPA_IF_TO")
+
         if int(statusbits2[0]):
             print(self.loginfo + "FPA_IF_TO")
         if int(statusbits2[1]):
@@ -790,6 +804,8 @@ class llnl_v4:
             print(self.loginfo + "UART_TX_TO_RST")
         if int(statusbits2[4]):
             print(self.loginfo + "UART_RX_TO_RST")
+        if len(statusbits2) > 5 and int(statusbits2[5]):
+            print(self.loginfo + "PDBIAS Unready")
 
     def reportEdgeDetects(self):
         """
@@ -841,8 +857,6 @@ class llnl_v4:
         statDict = OrderedDict(
             {
                 "Temperature sensor reading (Deg C)": "{0:1.2f}".format(temp),
-                "Pressure reading (Torr)": str(round(self.ca.getPressure(), 3)),
-                "Pressure sensor reading (mV)": "{0:1.2f}".format(press),
                 "Sensor read complete": str(statusbits[0]),
                 "Coarse trigger detected": str(statusbits[1]),
                 "Fine trigger detected": str(statusbits[2]),
@@ -863,6 +877,17 @@ class llnl_v4:
                 "PDBIAS Unready": str(statusbits2[5]),
             }
         )
+
+        if hasattr(self, "getPressure"):
+            try:
+                statDict["Pressure reading (Torr)"] = str(round(self.ca.getPressure(), 3))
+                statDict["Pressure sensor reading (mV)"] = "{0:1.2f}".format(press)
+            except Exception as exc:
+                statDict["Pressure reading (Torr)"] = "Unavailable"
+                statDict["Pressure sensor reading (mV)"] = "Unavailable"
+                logging.warning(
+                    self.logwarn + "dumpStatus: pressure read unavailable: " + repr(exc)
+                )
 
         if self.ca.sensorname == "icarus" or self.ca.sensorname == "icarus2":
             senslabs = {
@@ -903,15 +928,3 @@ class llnl_v4:
         for x in [statDict, sensDict, MonDict, DACDict, regDict]:
             dumpDict.update(x)
         return dumpDict
-
-
-"""
-Copyright (c) 2025, Lawrence Livermore National Security, LLC.  All rights reserved.  
-LLNL-CODE-838080
-
-This work was produced at the Lawrence Livermore National Laboratory (LLNL) under 
-contract no. DE-AC52-07NA27344 (Contract 44) between the U.S. Department of Energy (DOE)
-and Lawrence Livermore National Security, LLC (LLNS) for the operation of LLNL.
-'nsCamera' is distributed under the terms of the MIT license. All new contributions must
-be made under this license.
-"""

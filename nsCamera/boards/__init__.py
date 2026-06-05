@@ -5,6 +5,7 @@ Each board has its own number of ADCs, POTs, and sensors. More devices can be ad
 the future. The list of imports will grow as we make more types of boards.
 
 Author: Matthew Dayton (dayton5@llnl.gov)
+Author: Matthew Dayton (matthew@hcmos.com)
 
 Copyright (c) 2025, Lawrence Livermore National Security, LLC.  All rights reserved.
 LLNL-CODE-838080
@@ -15,12 +16,13 @@ and Lawrence Livermore National Security, LLC (LLNS) for the operation of LLNL.
 'nsCamera' is distributed under the terms of the MIT license. All new contributions must
 be made under this license.
 
-Version: 2.1.2 (February 2025)
+Version: 2.1.4 (May 2026)
 """
 from .LLNL_v1 import llnl_v1
 from .LLNL_v4 import llnl_v4
+from .nova_v1 import nova_v1
 
-__all__ = ["LLNL_v1", "LLNL_v4"]
+__all__ = ["LLNL_v1", "LLNL_v4", "nova_v1"]
 
 """
 Copyright (c) 2025, Lawrence Livermore National Security, LLC.  All rights reserved.  

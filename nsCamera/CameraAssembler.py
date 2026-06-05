@@ -9,6 +9,7 @@ controls a combination of three components:
 
 Author: Jeremy Martin Hill (jerhill@llnl.gov)
 Author: Matthew Dayton (dayton5@llnl.gov)
+Author: Matthew Dayton (matthew@hcmos.com)
 
 Copyright (c) 2025, Lawrence Livermore National Security, LLC.  All rights reserved.
 LLNL-CODE-838080
@@ -19,7 +20,7 @@ and Lawrence Livermore National Security, LLC (LLNS) for the operation of LLNL.
 'nsCamera' is distributed under the terms of the MIT license. All new contributions must
 be made under this license.
 
-Version: 2.1.2 (February 2025)
+Version: 2.1.4 (May 2026)
 """
 
 from __future__ import absolute_import
@@ -191,7 +192,7 @@ class CameraAssembler:
             logfile: optional string, name of file to divert console output
             timeout: timeout in seconds for connecting using Gigabit Ethernet
         """
-        self.version = "2.1.2"
+        self.version = "2.1.4"
         self.currtime = 0
         self.oldtime = 0
         self.trigtime = []
@@ -544,21 +545,46 @@ class CameraAssembler:
 
         # get board
         if self.boardname == "llnl_v1":
-            import nsCamera.boards.LLNL_v1 as brd
+            from nsCamera.boards.LLNL_v1 import llnl_v1
 
-            self.board = brd.llnl_v1(self)
+            self.board = llnl_v1(self)
+
         elif self.boardname == "llnl_v4":
-            import nsCamera.boards.LLNL_v4 as brd
+            from nsCamera.boards.LLNL_v4 import llnl_v4
 
-            self.board = brd.llnl_v4(self)
+            self.board = llnl_v4(self)
+
+        elif self.boardname == "nova_v1":
+            from nsCamera.boards.nova_v1 import nova_v1
+
+            self.board = nova_v1(self)
+
         else:
-            boardmodname = ".board." + self.boardname
+            boardmodname = ".boards." + self.boardname
             try:
                 boardmod = importlib.import_module(boardmodname, "nsCamera")
-            except ImportError:
-                logging.critical(self.logcrit + "invalid board name")
-                sys.exit(1)
-            boardobj = getattr(boardmod, self.boardname)
+            except ImportError as exc:
+                logging.critical(
+                    self.logcrit
+                    + "invalid board name or failed board import: "
+                    + boardmodname
+                    + "; "
+                    + repr(exc)
+                )
+                raise
+
+            try:
+                boardobj = getattr(boardmod, self.boardname)
+            except AttributeError:
+                logging.critical(
+                    self.logcrit
+                    + "board module imported, but class was not found: module="
+                    + boardmodname
+                    + ", class="
+                    + self.boardname
+                )
+                raise
+
             self.board = boardobj(self)
 
         # Now that board exists, initialize board-specific aliases for sensors
@@ -657,9 +683,13 @@ class CameraAssembler:
                 boardtype = "LLNLv1"
             elif self.FPGANum[1] == "4":
                 boardtype = "LLNLv4"
+            elif self.FPGANum[1].lower() == "5":
+                boardtype = "Nova_v1"
             else:
                 boardtype = "LLNLv?"
                 invalidFPGANum = True
+        elif self.FPGANum[1].lower() == "5":
+            boardtype = "AHSnova1"
         else:
             boardtype = "SNLrevC"
             logging.warning(
@@ -667,6 +697,7 @@ class CameraAssembler:
                 " supported by this software "
             )
             invalidFPGANum = True
+
         self.FPGAboardtype = boardtype
 
         if int(self.FPGANum[6], 16) & 1:
@@ -679,6 +710,10 @@ class CameraAssembler:
             sensor = "Icarus"
         elif self.FPGANum[7] == "2":
             sensor = "Daedalus"
+        elif self.FPGANum[7] == "3":
+            sensor = "Icarus2"
+        elif self.FPGANum[7] == "4":
+            sensor = "Hyperion"
         else:
             sensor = "Undefined"
             invalidFPGANum = True
@@ -690,11 +725,25 @@ class CameraAssembler:
             interfaces.append("GigE")
         self.FPGAinterfaces = interfaces
 
+        # Nova_v1 / AHSnova1 is compatible with Icarus, Icarus2, and Hyperion.
+        # AHSnova1 firmware encodes sensor field "1" (Icarus) to mean Icarus/Icarus2.
+        if boardtype in {"Nova_v1", "AHSnova1"} and sensor not in {"Icarus", "Icarus2", "Hyperion"}:
+            invalidFPGANum = True
+            logging.warning(
+                self.logwarn
+                + "FPGA self-identifies as "
+                + boardtype
+                + ", but sensor field is "
+                + sensor
+                + ". Nova_v1 is only compatible with Icarus2 and Hyperion."
+            )
+
         if invalidFPGANum:
             if self.FPGANum == "80000001":
                 invalidFPGANum = False
             else:
                 logging.warning(self.logwarn + "FPGA self-identification is invalid")
+
         self.FPGAinvalid = invalidFPGANum
 
         return invalidFPGANum, (boardtype, rad, sensor)
@@ -718,8 +767,8 @@ class CameraAssembler:
 
         regname = regname.upper()
         if regname not in self.board.registers:
-            err = "{logerr}getRegister: Invalid register name: {regname}; returning"
-            " zeros".format(logerr=self.logerr, regname=regname)
+            err = "{logerr}getRegister: Invalid register name: {regname}; returning zeros".format(
+                logerr=self.logerr, regname=regname)
             logging.error(err)
             return err, "00000000"
         sendpkt = Packet(cmd="1", addr=self.board.registers[regname])
@@ -1012,17 +1061,20 @@ class CameraAssembler:
 
     def getPot(self, potname, errflag=False):
         """
-        Retrieves value of pot or ADC monitor subregister, scaled to [0,1). Returns '-1'
-          if value is unavailable
+        Retrieves value of a DAC/pot subregister, scaled to [0,1).
+        Returns -1 if value is unavailable.
+
+        Note:
+            Monitor ADC reads should use getMonV(), not getPot().
 
         Args:
-            potname: name of pot or monitor, e.g., VRST or MON_CH2 found in
+            potname: name of DAC/pot, e.g., VRST, DACA, DACB, found in
               board.subreg_aliases or defined in board.subregisters
             errflag: if True, return tuple with error string
 
         Returns:
             if errflag:
-                tuple: (error string, float value of subregister, scaled to [0,1) )
+                tuple: (error string, float value of subregister, scaled to [0,1))
             else:
                 float value of subregister, scaled to [0,1)
         """
@@ -1033,36 +1085,85 @@ class CameraAssembler:
         )
 
         potname, potobj, _ = self.resolveSubreg(potname)
+
         if not potobj:
             err = "{logerr}getPot: invalid lookup: {potname}; returning -1".format(
                 logerr=self.logerr, potname=potname
             )
-
             logging.error(err)
+
             if errflag:
                 return err, -1
             return -1
+
+        if not potobj.writable:
+            err = (
+                "{logerr}getPot: {potname} resolves to a read-only subregister. "
+                "Use getMonV() for monitor ADC channels; returning -1"
+            ).format(logerr=self.logerr, potname=potname)
+
+            logging.error(err)
+
+            if errflag:
+                return err, -1
+            return -1
+
         err, b_pot_value = self.getSubregister(potname)
+
         if err:
             err = "{logerr}getPot: unable to read subregister: {potname}".format(
                 logerr=self.logerr, potname=potname
             )
-            b_pot_value = "-0b1"
+            logging.error(err)
+
+            if errflag:
+                return err, -1
+            return -1
 
         # convert binary string back to decimal
         f_reg_value = 1.0 * int(b_pot_value, 2)
         value = (f_reg_value - potobj.min) / (potobj.max - potobj.min)
-        # logging.debug(self.logdebug + "getpot: value = " + str(value))
 
         logging.debug(
-            "{logdebug}getpot: value =  {value}".format(
+            "{logdebug}getPot: value = {value}".format(
                 logdebug=self.logdebug, value=value
             )
         )
+
         if value < 0:
             value = -1
+
         if errflag:
             return err, value
+        return value
+    
+    def getSubregRatio(self, subregname, errflag=False):
+        """
+        Read a subregister and return its normalized code value from 0.0 to 1.0.
+
+        This is used by both DAC readback and housekeeping monitor ADC channels.
+        """
+        logging.debug(
+            self.logdebug
+            + "getSubregRatio: subregname = "
+            + subregname
+            + "; errflag = "
+            + str(errflag)
+        )
+
+        err, rval = self.getSubregister(subregname)
+        if err:
+            if errflag:
+                return err, 0
+            return 0
+
+        srobj, _ = self.resolveSubreg(subregname)
+        value = int(rval, 2) / srobj.max_value
+
+        logging.debug(self.logdebug + "getSubregRatio: value = " + str(value))
+
+        if errflag:
+            return "", value
         return value
 
     def setPot(self, potname, value=1.0, errflag=False):
@@ -1124,7 +1225,7 @@ class CameraAssembler:
         err, rval = self.setSubregister(potname, setpointpadded)
         if err:
             logging.error(
-                err="{logerr}setPot: unable to confirm setting of subregister:"
+                "{logerr}setPot: unable to confirm setting of subregister:"
                 " {potname}".format(logerr=self.logerr, potname=potname)
             )
         ident = potname[3:]
@@ -1208,6 +1309,489 @@ class CameraAssembler:
             return err, returnval
         return returnval
 
+    def tunePotV(
+        self,
+        potname,
+        voltage,
+        accuracy=0.01,
+        iterations=20,
+        approach=0.75,
+        errflag=False,
+    ):
+        """
+        Tune a DAC/pot to a requested monitor voltage using closed-loop feedback.
+
+        The algorithm:
+            1. Resolve the DAC/pot name.
+            2. Find the corresponding monitor channel.
+            3. Measure monitor response at two DAC settings.
+            4. Fit a linear model: Vmon = slope * setting + intercept.
+            5. Estimate the DAC setting for the requested voltage.
+            6. Iteratively correct the setting using monitor feedback.
+
+        Args:
+            potname: DAC/pot name or alias, e.g. VAB, VRST, DACA, DACG
+            voltage: desired monitored voltage
+            accuracy: acceptable monitor voltage error in volts
+            iterations: maximum tuning iterations
+            approach: damping factor for correction step, normally 0.5 to 1.0
+            errflag: if True, return tuple(error string, response)
+
+        Returns:
+            if errflag:
+                tuple(error string, response string)
+            else:
+                response string, or "-0b1" on failure
+        """
+        logging.debug(
+            self.logdebug
+            + "tunePotV: potname = "
+            + str(potname)
+            + "; voltage = "
+            + str(voltage)
+            + "; accuracy = "
+            + str(accuracy)
+            + "; iterations = "
+            + str(iterations)
+            + "; approach = "
+            + str(approach)
+            + "; errflag = "
+            + str(errflag)
+        )
+
+        # Resolve aliases, e.g. VAB -> DACG
+        potname, potobj, _ = self.resolveSubreg(potname)
+
+        if not potobj:
+            err = (
+                self.logerr
+                + "tunePotV: invalid pot lookup "
+                + str(potname)
+                + "; returning '-0b1'"
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        if not potobj.writable:
+            err = (
+                self.logerr
+                + "tunePotV: "
+                + str(potname)
+                + " is not writable; returning '-0b1'"
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        if voltage is None:
+            err = self.logerr + "tunePotV: voltage is None; returning '-0b1'"
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        if accuracy is None:
+            accuracy = 0.01
+
+        if iterations is None:
+            iterations = 20
+
+        if approach is None:
+            approach = 0.75
+
+        try:
+            voltage = float(voltage)
+            accuracy = float(accuracy)
+            iterations = int(iterations)
+            approach = float(approach)
+        except (TypeError, ValueError):
+            err = (
+                self.logerr
+                + "tunePotV: invalid numeric argument; voltage="
+                + str(voltage)
+                + ", accuracy="
+                + str(accuracy)
+                + ", iterations="
+                + str(iterations)
+                + ", approach="
+                + str(approach)
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        if iterations < 1:
+            err = self.logerr + "tunePotV: iterations must be >= 1; returning '-0b1'"
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        if accuracy <= 0:
+            err = self.logerr + "tunePotV: accuracy must be > 0; returning '-0b1'"
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        if approach <= 0:
+            err = self.logerr + "tunePotV: approach must be > 0; returning '-0b1'"
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        # Do not allow an insane correction gain.
+        if approach > 1.0:
+            logging.warning(
+                self.logwarn
+                + "tunePotV: approach > 1.0 requested; clamping to 1.0"
+            )
+            approach = 1.0
+
+        # Find the monitor channel associated with this pot.
+        monitor_name = None
+        for mon, ctrl in self.board.monitor_controls.items():
+            if ctrl.upper() == potname.upper():
+                monitor_name = mon
+                break
+
+        if monitor_name is None:
+            err = (
+                self.logerr
+                + "tunePotV: pot '"
+                + str(potname)
+                + "' does not have a corresponding monitor; returning '-0b1'"
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        def clip(value, low=0.0, high=1.0):
+            return max(low, min(high, value))
+
+        def averageMonV(monname, samples=5, delay=0.02):
+            """
+            Average monitor voltage readings.
+
+            Returns:
+                tuple(error string, averaged voltage)
+            """
+            local_err = ""
+            vals = []
+
+            for _ in range(samples):
+                err_i, val_i = self.getMonV(monname, errflag=True)
+                if err_i:
+                    local_err += err_i + " "
+                else:
+                    vals.append(val_i)
+
+                if delay:
+                    time.sleep(delay)
+
+            if not vals:
+                local_err += (
+                    self.logerr
+                    + "tunePotV: no valid monitor readings for "
+                    + str(monname)
+                )
+                return local_err, -1
+
+            return local_err, sum(vals) / len(vals)
+
+        # Calibration points. Keep away from rails to avoid output saturation.
+        cal_low_setting = 0.20
+        cal_high_setting = 0.80
+        setting_span = cal_high_setting - cal_low_setting
+
+        settle_s = 0.20
+        avg_samples = 5
+        avg_delay_s = 0.02
+
+        err = ""
+        rval = "-0b1"
+
+        # Measure low calibration point.
+        err_i, rval = self.setPot(potname, cal_low_setting, errflag=True)
+        err += err_i
+        time.sleep(settle_s)
+
+        err_i, mon_low = averageMonV(
+            monitor_name, samples=avg_samples, delay=avg_delay_s
+        )
+        err += err_i
+
+        # Measure high calibration point.
+        err_i, rval = self.setPot(potname, cal_high_setting, errflag=True)
+        err += err_i
+        time.sleep(settle_s)
+
+        err_i, mon_high = averageMonV(
+            monitor_name, samples=avg_samples, delay=avg_delay_s
+        )
+        err += err_i
+
+        meas_span = mon_high - mon_low
+
+        logging.debug(
+            self.logdebug
+            + "tunePotV: calibration pot="
+            + str(potname)
+            + ", monitor="
+            + str(monitor_name)
+            + ", mon_low="
+            + str(mon_low)
+            + " V at setting="
+            + str(cal_low_setting)
+            + ", mon_high="
+            + str(mon_high)
+            + " V at setting="
+            + str(cal_high_setting)
+        )
+
+        if err:
+            err = (
+                err
+                + self.logerr
+                + "tunePotV: monitor read or DAC set failed during calibration; "
+                + "returning '-0b1'"
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        # Reject weak or invalid monitor response.
+        # A good DAC monitor usually changes by volts over this interval.
+        # 50 mV is intentionally loose to avoid false failures on small-range monitors.
+        if abs(meas_span) < 0.05:
+            err = (
+                self.logerr
+                + "tunePotV: insufficient monitor response for pot "
+                + str(potname)
+                + "; monitor="
+                + str(monitor_name)
+                + "; mon_low="
+                + str(mon_low)
+                + " V, mon_high="
+                + str(mon_high)
+                + " V; returning '-0b1'"
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        # For these DAC monitor paths, expect monotonic increasing response.
+        if meas_span <= 0:
+            err = (
+                self.logerr
+                + "tunePotV: monitor response is not monotonic increasing for pot "
+                + str(potname)
+                + "; monitor="
+                + str(monitor_name)
+                + "; mon_low="
+                + str(mon_low)
+                + " V, mon_high="
+                + str(mon_high)
+                + " V; returning '-0b1'"
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        slope = meas_span / setting_span
+        intercept = mon_low - slope * cal_low_setting
+
+        # One DAC-code LSB expressed as expected monitor voltage.
+        stepsize_v = abs(slope) / (potobj.max_value + 1)
+        mindiff = max(accuracy, stepsize_v)
+
+        setting = (voltage - intercept) / slope
+        setting = clip(setting)
+
+        logging.debug(
+            self.logdebug
+            + "tunePotV: fit slope="
+            + str(slope)
+            + " V/setting; intercept="
+            + str(intercept)
+            + " V; target="
+            + str(voltage)
+            + " V; initial setting="
+            + str(setting)
+            + "; stepsize_v="
+            + str(stepsize_v)
+            + " V; mindiff="
+            + str(mindiff)
+            + " V"
+        )
+
+        last_setting = None
+        last_measured = None
+        loop_err = ""
+
+        for iteration in range(iterations):
+            err_i, rval = self.setPot(potname, setting, errflag=True)
+            loop_err += err_i
+            time.sleep(settle_s)
+
+            err_i, measured = averageMonV(
+                monitor_name, samples=avg_samples, delay=avg_delay_s
+            )
+            loop_err += err_i
+
+            diff = voltage - measured
+
+            logging.debug(
+                self.logdebug
+                + "tunePotV: iteration="
+                + str(iteration)
+                + "; pot="
+                + str(potname)
+                + "; monitor="
+                + str(monitor_name)
+                + "; setting="
+                + str(setting)
+                + "; measured="
+                + str(measured)
+                + " V; target="
+                + str(voltage)
+                + " V; diff="
+                + str(diff)
+                + " V"
+            )
+
+            if loop_err:
+                logging.warning(
+                    self.logwarn
+                    + "tunePotV: read/set warning during iteration: "
+                    + loop_err
+                )
+
+            if abs(diff) <= mindiff:
+                logging.debug(
+                    self.logdebug
+                    + "tunePotV: tuning complete; pot="
+                    + str(potname)
+                    + "; monitor="
+                    + str(monitor_name)
+                    + "; setting="
+                    + str(setting)
+                    + "; measured="
+                    + str(measured)
+                    + " V; target="
+                    + str(voltage)
+                    + " V"
+                )
+                if errflag:
+                    return loop_err, rval
+                return rval
+
+            # Use local slope if two valid points are available.
+            local_slope = slope
+
+            if (
+                last_setting is not None
+                and last_measured is not None
+                and abs(setting - last_setting) > (1.0 / (potobj.max_value + 1))
+            ):
+                candidate_slope = (measured - last_measured) / (
+                    setting - last_setting
+                )
+
+                if candidate_slope > 0:
+                    local_slope = candidate_slope
+
+            last_setting = setting
+            last_measured = measured
+
+            adjust = approach * diff / local_slope
+            new_setting = clip(setting + adjust)
+
+            # If correction is smaller than one DAC code, stop after checking error.
+            if abs(new_setting - setting) < (1.0 / (potobj.max_value + 1)):
+                logging.debug(
+                    self.logdebug
+                    + "tunePotV: correction smaller than one DAC code; stopping"
+                )
+                break
+
+            # If pinned at a rail, no more useful correction is possible.
+            if new_setting == setting:
+                logging.warning(
+                    self.logwarn
+                    + "tunePotV: tuning pinned at rail; pot="
+                    + str(potname)
+                    + "; monitor="
+                    + str(monitor_name)
+                    + "; setting="
+                    + str(setting)
+                    + "; measured="
+                    + str(measured)
+                    + " V; target="
+                    + str(voltage)
+                    + " V"
+                )
+                break
+
+            setting = new_setting
+
+        # Final check before reporting failure.
+        err_i, measured = averageMonV(
+            monitor_name, samples=avg_samples, delay=avg_delay_s
+        )
+        loop_err += err_i
+
+        diff = voltage - measured
+
+        if abs(diff) <= mindiff:
+            logging.debug(
+                self.logdebug
+                + "tunePotV: tuning complete after final check; pot="
+                + str(potname)
+                + "; monitor="
+                + str(monitor_name)
+                + "; measured="
+                + str(measured)
+                + " V; target="
+                + str(voltage)
+                + " V"
+            )
+            if errflag:
+                return loop_err, rval
+            return rval
+
+        err = (
+            loop_err
+            + self.logwarn
+            + "tunePotV: tuning did not converge for pot "
+            + str(potname)
+            + "; monitor="
+            + str(monitor_name)
+            + "; target="
+            + str(voltage)
+            + " V, measured="
+            + str(measured)
+            + " V, diff="
+            + str(diff)
+            + " V, final setting="
+            + str(setting)
+        )
+
+        logging.warning(err)
+
+        if errflag:
+            return err, rval
+        return rval
+
     # TODO: optimize tuning speed for DACs
     def setPotV(
         self,
@@ -1220,21 +1804,19 @@ class CameraAssembler:
         errflag=False,
     ):
         """
-        Sets pot to specified voltage. If tune=True, uses monitor to adjust pot to
-          correct voltage. Tuning will attempt to tune to closest LSB on pot; if
-          'accuracy' > LSB resolution, will only complain if tuning is unable to get
-          the voltage within 'accuracy'
+        Sets a DAC/pot to the specified voltage.
+
+        If tune=True, closed-loop tuning is delegated to tunePotV(), which uses the
+        associated monitor channel to adjust the DAC setting.
 
         Args:
             potname: common name of pot, e.g., VRST found in board.subreg_aliases or
               defined in board.subregisters
-            voltage: voltage bound by pot max and min (set in board object)
-            tune: if True, iterate with monitor to correct voltage
-            accuracy: acceptable error in volts (if None, attempts to find the closest
-              possible pot setting and warns if last iteration does not reduce error
-              below the resolution of the pot)
-            iterations: number of iteration attempts
-            approach: approximation parameter (>1 may cause overshoot)
+            voltage: voltage bounded by pot minV and maxV
+            tune: if True, iterate with monitor feedback to correct voltage
+            accuracy: acceptable tuning error in volts
+            iterations: maximum number of tuning iterations
+            approach: tuning correction damping factor
             errflag: if True, return tuple with error string
 
         Returns:
@@ -1260,165 +1842,136 @@ class CameraAssembler:
             + "; errflag = "
             + str(errflag)
         )
-        potname, potobj, writable = self.resolveSubreg(potname)
+
+        resolved_name, potobj, writable = self.resolveSubreg(potname)
+
         if not potobj:
             err = (
                 self.logerr
                 + "setPotV: invalid lookup: "
-                + potname
-                + " , returning '-0b1' "
-            )
-            logging.error(err)
-            if errflag:
-                return err, "-0b1"
-            return "-0b1"
-        if not writable:
-            err = (
-                self.logerr
-                + "setPotV: not a writable subregister: "
-                + potname
+                + str(potname)
                 + "; returning '-0b1'"
             )
             logging.error(err)
             if errflag:
                 return err, "-0b1"
             return "-0b1"
-        if voltage < potobj.minV:
-            voltage = potobj.minV
-        if voltage > potobj.maxV:
-            voltage = potobj.maxV
-        setting = (voltage - potobj.minV) / (potobj.maxV - potobj.minV)
-        logging.debug(self.logdebug + "setPotV: setting = " + str(setting))
-        err, rval = self.setPot(potname, setting, errflag=True)
-        time.sleep(0.1)
-        # TODO: refactor tuning to separate method
-        if tune:
-            logging.debug(self.logdebug + "setPotV: beginning tuning")
-            if potname not in self.board.monitor_controls.values():
-                err = (
-                    self.logerr
-                    + "setPotV: pot '"
-                    + potname
-                    + "' does not have a corresponding monitor; returning '-0b1'"
-                )
-                logging.error(err)
-                if errflag:
-                    return err, "-0b1"
-                return "-0b1"
-            self.setPot(potname, 0.65)
-            time.sleep(0.2)
-            err1, mon65 = self.getMonV(potname, errflag=True)
-            self.setPot(potname, 0.35)
-            time.sleep(0.2)
-            err2, mon35 = self.getMonV(potname, errflag=True)
-            # theoretical voltage range assuming linearity
-            potrange = (mon65 - mon35) / 0.3
-            stepsize = potrange / (potobj.max_value + 1)
-            err += err1 + err2
-            if err or potrange < 1:
-                err += self.logerr + "setPotV: unable to tune pot " + potname
-                if potrange < 1:  # potrange should be on the order of 3.3 or 5 volts
-                    err += "; monitor shows insufficient change with pot variation; "
-                    "retrying setPotV with tune=False"
-                logging.warning(err)
-                err, rval = self.setPotV(
-                    potname=potname, voltage=voltage, tune=False, errflag=True
-                )
-                if errflag:
-                    err += "; unable to set pot; returning '-0b1'"
-                    return err, "-0b1"
-                return "-0b1"
-            potzero = 0.35 - (mon35 / potrange)
-            potone = 1.65 - (mon65 / potrange)
-            if potzero < 0:
-                potzero = 0
-            if potone > 1:
-                potone = 1
 
-            if accuracy > stepsize:
-                mindiff = accuracy
-            else:
-                mindiff = stepsize
-            setting = potzero + (voltage / potone)
-            self.setPot(potname, setting)
-            lastdiff = 0
-            smalladjust = 0
-            err3 = ""
-            for _ in range(iterations):
-                err3i, measured = self.getMonV(potname, errflag=True)
-                if err3i:
-                    err3 = err3 + err3i + " "
-                diff = voltage - measured
-                if abs(diff - lastdiff) < stepsize / 2:
-                    if (
-                        smalladjust > 12
-                    ):  # magic number for now; if it doesn't converge after several
-                        #   tries, it never will, usually because the setting is pinned
-                        #   to 0 or 1 and adjust can't change it
-                        logging.warning(
-                            self.logwarn
-                            + "setPotV: Tuning converged too slowly: pot "
-                            + potname
-                            + " set to "
-                            + str(voltage)
-                            + "V, monitor returns "
-                            + str(measured)
-                            + "V; if this value is incorrect, consider trying "
-                            + "tune=False"
-                        )
-                        logging.debug(self.logdebug + "setPotV: tuning complete")
-                        if errflag:
-                            return "", rval
-                        return rval
-                    smalladjust += 1
-                if not int(2 * diff / stepsize):
-                    # TODO: is this check redundant with the first one?
-                    logging.debug(self.logdebug + "setPotV: tuning complete")
-                    if errflag:
-                        return "", rval
-                    return rval
-                adjust = approach * (diff / potrange)
-                setting += adjust
-                if setting > 1:
-                    setting = 1
-                elif setting < 0:
-                    setting = 0
-                err1, rval = self.setPot(potname, setting, True)
-                lastdiff = diff
-                time.sleep(0.2)
-            err4, measured = self.getMonV(potname, errflag=True)
-            diff = voltage - measured
-            # code will try to get to within one stepsize, but will only complain if it
-            #   doesn't get within mindiff
-            if int(diff / mindiff):
-                logging.warning(
-                    self.logwarn
-                    + "setPotV: pot "
-                    + potname
-                    + " set to "
-                    + str(voltage)
-                    + "V, monitor returns "
-                    + str(measured)
-                    + "V"
-                )
-            err += err1 + err2 + err3 + err4
+        if not writable:
+            err = (
+                self.logerr
+                + "setPotV: not a writable subregister: "
+                + str(resolved_name)
+                + "; returning '-0b1'"
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        try:
+            voltage = float(voltage)
+        except (TypeError, ValueError):
+            err = (
+                self.logerr
+                + "setPotV: invalid voltage: "
+                + str(voltage)
+                + "; returning '-0b1'"
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        if voltage < potobj.minV:
+            logging.warning(
+                self.logwarn
+                + "setPotV: requested voltage "
+                + str(voltage)
+                + " V is below minimum for "
+                + str(resolved_name)
+                + "; clamping to "
+                + str(potobj.minV)
+                + " V"
+            )
+            voltage = potobj.minV
+
+        if voltage > potobj.maxV:
+            logging.warning(
+                self.logwarn
+                + "setPotV: requested voltage "
+                + str(voltage)
+                + " V is above maximum for "
+                + str(resolved_name)
+                + "; clamping to "
+                + str(potobj.maxV)
+                + " V"
+            )
+            voltage = potobj.maxV
+
+        if tune:
+            return self.tunePotV(
+                potname=resolved_name,
+                voltage=voltage,
+                accuracy=accuracy,
+                iterations=iterations,
+                approach=approach,
+                errflag=errflag,
+            )
+
+        if potobj.maxV == potobj.minV:
+            err = (
+                self.logerr
+                + "setPotV: invalid voltage range for "
+                + str(resolved_name)
+                + "; minV equals maxV; returning '-0b1'"
+            )
+            logging.error(err)
+            if errflag:
+                return err, "-0b1"
+            return "-0b1"
+
+        setting = (voltage - potobj.minV) / (potobj.maxV - potobj.minV)
+
+        if setting < 0:
+            setting = 0
+        elif setting > 1:
+            setting = 1
+
+        logging.debug(
+            self.logdebug
+            + "setPotV: direct set; potname = "
+            + str(resolved_name)
+            + "; setting = "
+            + str(setting)
+        )
+
+        err, rval = self.setPot(resolved_name, setting, errflag=True)
+
         if err:
             logging.error(
                 self.logerr
-                + "setPotV: errors occurred: "
-                + err
+                + "setPotV: errors occurred while setting "
+                + str(resolved_name)
+                + ": "
+                + str(err)
                 + "; returning negative value"
             )
-            rval = -1
+            if errflag:
+                return err, -1
+            return -1
+
+        logging.debug(self.logdebug + "setPotV: direct set complete")
+
         if errflag:
             return err, rval
-        logging.debug(self.logdebug + "setPotV: tuning complete")
         return rval
+
 
     def getMonV(self, monname, errflag=False):
         """
         Reads voltage from monitor named or associated with the pot named 'monname'.
-        Returns negative voltage if pot read is invalid
+        Returns negative voltage if monitor read is invalid.
 
         Args:
             monname: name of pot or monitor, e.g., VRST or MON_CH2 found in
@@ -1438,16 +1991,19 @@ class CameraAssembler:
             + "; errflag = "
             + str(errflag)
         )
+
         monname = monname.upper()
+
         if monname in self.board.subreg_aliases:
             monname = self.board.subreg_aliases[monname].upper()
-        # else:
+
         for key, value in self.board.monitor_controls.items():
             if value == monname:
                 monname = key
+
         if monname not in self.board.monitor_controls:
             if monname in self.board.subreglist:
-                pass  # no change necessary
+                pass
             else:
                 err = (
                     self.logerr
@@ -1459,8 +2015,9 @@ class CameraAssembler:
                 if errflag:
                     return err, -1
                 return -1
-        err, monval = self.getPot(monname, errflag=True)
-        logging.debug(self.logdebug + "getMonV: monval = " + str(monval))
+
+        err, raw_bits = self.getSubregister(monname)
+
         if err:
             logging.error(
                 self.logerr
@@ -1468,20 +2025,53 @@ class CameraAssembler:
                 + monname
                 + "; returning -1"
             )
-            monval = -1
+            if errflag:
+                return err, -1
             return -1
+
+        monname, srobj, _ = self.resolveSubreg(monname)
+
+        if not srobj:
+            err = (
+                self.logerr
+                + "getMonV: unable to resolve monitor subregister "
+                + monname
+                + "; returning -1"
+            )
+            logging.error(err)
+            if errflag:
+                return err, -1
+            return -1
+
+        monval = int(raw_bits, 2) / srobj.max_value
+
+        logging.debug(
+            self.logdebug
+            + "getMonV: raw_bits = "
+            + str(raw_bits)
+            + "; normalized monval = "
+            + str(monval)
+        )
+
         # Bipolar ADCs can legitimately return a negative voltage, but this is an
-        #   error condition for the board
+        # error condition for the board
         if self.board.ADC5_bipolar:
             if monval >= 0.5:
-                monval -= 1  # handle negative measurements (two's complement)
-            if errflag:
-                return err, 2 * self.board.ADC5_mult * monval * self.board.VREF
-            return 2 * self.board.ADC5_mult * monval * self.board.VREF
+                monval -= 1  # handle negative measurements, two's complement style
+
+            voltage = 2 * self.board.ADC5_mult * monval * self.board.VREF
         else:
-            if errflag:
-                return err, self.board.ADC5_mult * monval * self.board.VREF
-            return self.board.ADC5_mult * monval * self.board.VREF
+            voltage = self.board.ADC5_mult * monval * self.board.VREF
+
+        logging.debug(
+            self.logdebug
+            + "getMonV: voltage = "
+            + str(voltage)
+        )
+
+        if errflag:
+            return err, voltage
+        return voltage
 
     def readImgs(self, waitOnSRAM=True, mode="Hardware"):
         """
